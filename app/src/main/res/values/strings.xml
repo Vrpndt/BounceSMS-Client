@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">BounceSMS Client</string>
+    <string name="connDeviceText">"%s"</string>
+    <string name="lastSyncText">"Last Sync: %s"</string>
+</resources>
