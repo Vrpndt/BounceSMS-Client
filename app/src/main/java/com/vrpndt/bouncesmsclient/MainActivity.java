@@ -21,6 +21,7 @@ import android.support.v4.app.NotificationCompat;
 import android.support.v7.app.AlertDialog;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
+import android.text.TextUtils;
 import android.util.Log;
 import android.view.View;
 import android.webkit.MimeTypeMap;
@@ -32,10 +33,17 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.xmlpull.v1.XmlPullParser;
+import org.xmlpull.v1.XmlPullParserException;
+import org.xmlpull.v1.XmlPullParserFactory;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -44,11 +52,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.security.PrivilegedAction;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Enumeration;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -79,7 +88,8 @@ public class MainActivity extends AppCompatActivity {
 
     private BtClientThread btClientThread;
 
-    private OutboxObserver outboxObserver;
+    private SmsOutboxObserver smsOutboxObserver;
+    private MmsOutboxObserver mmsOutboxObserver;
     private HandlerThread outboxThread;
 
     private class BtClientConnector extends Thread {
@@ -268,10 +278,9 @@ public class MainActivity extends AppCompatActivity {
             BtClientConnector conThread = connectorThread;
             if(conn != null && conThread != null){
                 if(conThread.connected){
-                    Log.d("BT_OUT", String.format("Sending %d bytes via singleton call...",
-                            data.length));
                     conn.write(data);
-                    Log.d("BT_OUT", "Sent data via singleton call!");
+                    Log.d("BT_OUT", String.format("Sent %d bytes!",
+                            data.length));
                 }
             }else{
                 Log.e("BT_OUT", "Bluetooth connection or connector thread is null!");
@@ -323,6 +332,9 @@ public class MainActivity extends AppCompatActivity {
             public static final String SAVE_MEDIA = "saveMedia";
             public static final String LAST_SYNC = "lastSync";
             public static final String LAST_HOST = "lastHost";
+            public static final String LAST_MMS_ROOT = "lastMmsRoot";
+            public static final String LAST_MMS_PART = "lastMmsPart";
+            public static final String LAST_MMS_ADDR = "lastMmsAddr";
         }
 
         private static JSONObject getAppdataJSON(Context context) {
@@ -408,55 +420,29 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private class OutboxObserver extends ContentObserver {
-        private Uri outboxUri = Uri.parse("content://sms");
-        private boolean suppress = false;
-        private HashSet<String> handledIDs = new HashSet<>();
+    private class SmsOutboxObserver extends ContentObserver {
+        private final Uri smsUri = Uri.parse("content://sms");
 
-        private class SmsData{
-            String id;
-            String address;
-            String body;
-            String read;
-            String status;
-            String thread_id;
-
-            SmsData(String id, String address, String body, String read,
-                    String status, String thread_id){
-                this.id = id;
-                this.address = address;
-                this.body = body;
-                this.read = read;
-                this.status = status;
-                this.thread_id = thread_id;
-            }
-        }
-
-        public OutboxObserver(Handler handler){
+        public SmsOutboxObserver(Handler handler){
             super(handler);
         }
 
         @Override
         public void onChange(boolean selfChange) {
-            if(suppress) {return;}
             //cannot send sms if no connection
-            if(!BtConnectionManager.getInstance().isConnected()){return;}
+            //if(!BtConnectionManager.getInstance().isConnected() || selfChange){return;}
 
             try {
-                suppress = true;
-                ArrayList<SmsData> pending = new ArrayList<>();
-
                 super.onChange(selfChange);
-                Log.d("OUTBOX_OBSERVER", "OutboxObserver.onChange() called.");
 
                 //query outbox for any new items, return address, and body
                 String[] columns = new String[]{"_id", "address", "body", "date", "status",
                         "read", "thread_id", "type"};
-                //600,000ms = 10 minutes -- use this cutoff to prevent excessive results
-                long smsTimeCutoff = System.currentTimeMillis() - 600000;
-                String[] selectionArgs = {"2", "4", "5", "6", String.valueOf(smsTimeCutoff)};
-                Cursor cursor = getContentResolver().query(outboxUri,
-                        columns, "type IN (?, ?, ?, ?) AND date > ?",
+                //2000ms = 2 seconds -- use this cutoff to prevent excessive results
+                long smsTimeCutoff = System.currentTimeMillis() - 2000;
+                String[] selectionArgs = {"5", "6", String.valueOf(smsTimeCutoff)};
+                Cursor cursor = getContentResolver().query(smsUri,
+                        columns, "type IN (?, ?) AND date > ?",
                         selectionArgs, "_id ASC");
                 if (cursor != null) { //if found, get content and address, then send via bt
                     if (cursor.moveToFirst()) {
@@ -471,88 +457,286 @@ public class MainActivity extends AppCompatActivity {
                             String msgContent = cursor.getString(
                                     cursor.getColumnIndex("body")
                             );
-                            String msgDate = cursor.getString(
-                                    cursor.getColumnIndex("date")
-                            );
-                            String msgStatus = cursor.getString(
-                                    cursor.getColumnIndex("status")
-                            );
-                            String msgRead = cursor.getString(
-                                    cursor.getColumnIndex("read")
-                            );
-                            String msgThread = cursor.getString(
-                                    cursor.getColumnIndex("thread_id")
-                            );
                             String msgType = cursor.getString(
                                     cursor.getColumnIndex("type")
                             );
 
-                            if(handledIDs.contains(msgID)){
-                                if(msgType.equals("4") || msgType.equals("5") ||
-                                        msgType.equals("6")){
-                                    catchSecondarySmsUpdate(msgID);
-                                }else if(msgType.equals("2") && Long.parseLong(msgDate) <=
-                                        System.currentTimeMillis()-5000){
-                                    //add 5-second buffer before deleting from handledIDs
-                                    //for extra security against slow-running OSes
-                                    handledIDs.remove(msgID);
-                                }
-                            }else{
-                                if(msgType.equals("4") || msgType.equals("5") ||
-                                        msgType.equals("6")){
-                                    SmsData thisMsg = new SmsData(msgID, msgAddress, msgContent,
-                                            msgRead, msgStatus, msgThread);
-                                    pending.add(thisMsg);
-                                    Log.d("OUTBOX_OBSERVER",
-                                            String.format(
-                                                    "address: %s\nbody: %s\ntype: %s\nstatus: %s",
-                                                    msgAddress, msgContent, msgType, msgStatus));
-                                }
-                            }
+                            Log.d("OUTBOX_OBSERVER", String.format("New SMS (%s) of type %s",
+                                    msgID, msgType));
+
+                            handlePendingSms(msgID, msgAddress, msgContent);
+
                         } while(cursor.moveToNext());
                     }
                     cursor.close();
                 }
-                Log.d("OUTBOX_OBSERVER", String.format("%d messages pending.", pending.size()));
-                handlePendingSms(pending);
-                Log.d("OUTBOX_OBSERVER", "Outbox content updated. pending -> sent");
             }catch(Exception e){
                 Log.e("OUTBOX_OBSERVER", "Failed to process outbox change!", e);
-            }finally{
-                suppress = false;
             }
         }
 
-        private void handlePendingSms(ArrayList<SmsData> pending){
-            for(SmsData msg: pending) {
-                Log.d("OUTBOX_OBSERVER", String.format("\"%s\" -> %s", msg.body, msg.address));
-                BtConnectionManager.getInstance().write(encodeSMS(msg.address, msg.body));
+        private void handlePendingSms(String id, String address, String content){
+            BtConnectionManager.getInstance().write(encodeSMS(address, content));
 
-                //update type in messages in content://sms from 4/5/6 to 2
-                ContentValues updatedSMS = new ContentValues();
-                updatedSMS.put("type", 2);
-                String[] idArgs = {msg.id};
-                getContentResolver().update(
-                        outboxUri,
-                        updatedSMS,
-                        "_id = ?",
-                        idArgs
-                );
-                handledIDs.add(msg.id);
-            }
-        }
-
-        private void catchSecondarySmsUpdate(String id){
+            //update type in messages in content://sms from 5/6 to 2
             ContentValues updatedSMS = new ContentValues();
             updatedSMS.put("type", 2);
             String[] idArgs = {id};
             getContentResolver().update(
-                    outboxUri,
+                    smsUri,
                     updatedSMS,
                     "_id = ?",
                     idArgs
             );
-            handledIDs.remove(id);
+        }
+    }
+
+    private class MmsOutboxObserver extends ContentObserver {
+        private final Uri mmsRootUri = Uri.parse("content://mms");
+        private final Uri mmsAddrUri = Uri.parse("content://mms/addr");
+        private final Uri mmsPartUri = Uri.parse("content://mms/part");
+        private HashMap<String, MmsContainer> pendingMms = new HashMap<>();
+        private HashMap<String, String> threadIds = new HashMap<>();
+        private ArrayList<String> pendingMmsIds = new ArrayList<>();
+        private ArrayList<String> handledMmsIds = new ArrayList<>();
+
+        MmsOutboxObserver(Handler handler){
+            super(handler);
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            //cannot send sms if no connection
+            //if(!BtConnectionManager.getInstance().isConnected()){return;}
+            super.onChange(selfChange);
+
+            //first, check whether the latest entry in content://mms has been added to pendingMmsIds
+            //if not, add it
+            Cursor cursor = getContentResolver().query(
+                mmsRootUri,
+                new String[]{"_id", "date", "thread_id"},
+                "msg_box IN (?, ?, ?)",
+                new String[]{"3", "4", "5"},
+                "date DESC"
+            );
+            if(cursor != null){
+                if(cursor.moveToFirst()){
+                    String mmsId = cursor.getString(cursor.getColumnIndex("_id"));
+                    if(!pendingMmsIds.contains(mmsId) && !handledMmsIds.contains(mmsId)){
+                        String threadId = cursor.getString(cursor.getColumnIndex("thread_id"));
+                        long date = cursor.getLong(cursor.getColumnIndex("date"));
+                        MmsContainer newMms = new MmsContainer();
+                        newMms.textOnly = false;
+                        newMms.msgBox = 2;
+                        newMms.read = 0;
+                        newMms.date = date;
+                        newMms.attachmentCount = -1; //set -1 to indicate default/unset value
+                        pendingMmsIds.add(mmsId);
+                        pendingMms.put(mmsId, newMms);
+                        threadIds.put(mmsId, threadId);
+                        Log.d("MMS_OUTBOX_OBSERVER", "Set root info for new MMS "+mmsId);
+                    }
+                }
+                cursor.close();
+            }
+
+            //if there are no pending MMS messages, there is no need to carry on
+            if(pendingMmsIds.size() < 1){
+                Log.d("MMS_OUTBOX_OBSERVER", "onChange() was called but no MMSes to process!");
+                return;
+            }
+
+            //create a comma-separated list of all pending IDs
+            String idsString = TextUtils.join(", ", pendingMmsIds);
+
+            //obtain recipient address through content://mms-sms/conversations
+            //this requires a for-loop
+            for(String mmsId: pendingMmsIds){
+                String recipients = "";
+                String threadId = threadIds.get(mmsId);
+                Log.d("MMS_OUTBOX_OBSERVER", "Searching thread ID: "+threadId);
+                cursor = getContentResolver().query(
+                        Uri.parse("content://mms-sms/conversations/"+threadId+"/recipients"),
+                        new String[]{"recipient_ids"},
+                        "",
+                        null,
+                        null
+                );
+                if(cursor != null){
+                    if(cursor.moveToFirst()){
+                        //Recipient IDs that can be referenced in content://mms-sms/canonical-address
+                        recipients = cursor.getString(cursor.getColumnIndex("recipient_ids"));
+                    }
+                    cursor.close();
+                }
+
+                if(!recipients.equals("")){
+                    String[] recipIds = TextUtils.split(recipients, " ");
+                    if(recipIds.length == 1){
+                        cursor = getContentResolver().query(
+                                Uri.parse("content://mms-sms/canonical-address/"+recipIds[0]),
+                                new String[]{"address"},
+                                "",
+                                null,
+                                null
+                        );
+                        if(cursor != null){
+                            if(cursor.moveToFirst()){
+                                String address = cursor.getString(cursor.getColumnIndex("address"));
+                                if(address != null){
+                                    MmsContainer mms = pendingMms.get(mmsId);
+                                    mms.address = address;
+                                    pendingMms.put(mmsId, mms);
+                                    Log.d("MMS_OUTBOX_OBSERVER", "Added address to MMS "+mmsId);
+                                }
+                            }
+                            cursor.close();
+                        }
+                    }
+                }
+            }
+
+            //now check content://mms/part
+            cursor = getContentResolver().query(
+                    mmsPartUri,
+                    new String[]{"mid", "_id"},
+                    String.format("mid IN (%s)", idsString),
+                    null,
+                    "mid DESC"
+            );
+            if(cursor != null){
+                if(cursor.moveToFirst()){
+                    do{
+                        String partId = cursor.getString(cursor.getColumnIndex("_id"));
+                        String mmsId = cursor.getString(cursor.getColumnIndex("mid"));
+                        if(!pendingMms.get(mmsId).handledParts.contains(partId)){
+                            //only process this part if it hasn't been handled
+                            Uri uri = Uri.parse("content://mms/part/"+partId);
+                            onMmsPart(uri);
+                            MmsContainer mms = pendingMms.get(mmsId);
+                            mms.handledParts.add(partId);
+                            pendingMms.put(mmsId, mms);
+                            Log.d("MMS_OUTBOX_OBSERVER", "Handled part with ID "+partId+" for MMS "+mmsId);
+                        }
+
+                    } while(cursor.moveToNext());
+                }
+                cursor.close();
+            }
+
+            //finally, handle all items in pendingMms that are filled
+            for(String mmsId: pendingMmsIds){
+                MmsContainer mms = pendingMms.get(mmsId);
+                if(mms.isFilledForEncoding()){
+                    pendingMms.remove(mmsId);
+                    pendingMmsIds.remove(mmsId);
+                    handledMmsIds.add(mmsId);
+                    Log.d("MMS_OUTBOX_OBSERVER",
+                            String.format(
+                                    "Parsed MMS with ID %s\n" +
+                                            "Address: %s\n" +
+                                            "Text: %s\n" +
+                                            "Attachment Count: %d\n" +
+                                            "SMIL?: %s\n" +
+                                            "Got filenames?: %s",
+                                    mmsId, mms.address, mms.text, mms.attachmentCount,
+                                    (mms.smil != null),
+                                    mms.filenameMap.size() == mms.attachmentCount + 1
+                            ));
+                    mms.encodeAndSend();
+                    //update msg_box in content://mms to 2 (sent)
+                    ContentValues updatedMms = new ContentValues();
+                    updatedMms.put("msg_box", 2);
+                    String[] idArgs = {mmsId};
+                    getContentResolver().update(
+                            mmsRootUri,
+                            updatedMms,
+                            "_id = ?",
+                            idArgs
+                    );
+                    handledMmsIds.remove(mmsId);
+                    Log.d("MMS_OUTBOX_OBSERVER", "Encoded and sent MMS with ID "+mmsId);
+                }else{
+                    Log.d("MMS_OUTBOX_OBSERVER", "Checked MMS "+mmsId+" but isFilledForEncoding() is false!");
+                }
+            }
+        }
+
+        private void onMmsPart(Uri uri){
+           Cursor cursor = getContentResolver().query(
+                    uri,
+                    new String[]{"mid", "text", "ct", "cl"},
+                    "",
+                    null,
+                    null
+            );
+            if(cursor != null){
+                if(cursor.moveToFirst()){
+                    String mmsId = cursor.getString(cursor.getColumnIndex("mid"));
+                    String contentType = cursor.getString(cursor.getColumnIndex("ct"));
+                    switch(contentType){
+                        case "text/plain": {
+                            //text content
+                            String text = cursor.getString(cursor.getColumnIndex("text"));
+                            String filename = cursor.getString(cursor.getColumnIndex("cl"));
+                            MmsContainer mms = pendingMms.get(mmsId);
+                            mms.text = text;
+                            mms.filenameMap.put(filename, "text");
+                            pendingMms.put(mmsId, mms);
+                            break;
+                        }
+                        case "application/smil": {
+                            //smil xml
+                            String smilXml = cursor.getString(cursor.getColumnIndex("text"));
+                            InputStream smilStream = new ByteArrayInputStream(smilXml.getBytes());
+                            SmilObject smil = new SmilObject();
+                            smil.parseXml(smilStream);
+                            MmsContainer mms = pendingMms.get(mmsId);
+                            mms.smil = smil;
+                            mms.attachmentCount = smil.totalMedia;
+                            pendingMms.put(mmsId, mms);
+                            break;
+                        }
+                        default: {
+                            //attachment content
+                            String filename = cursor.getString(cursor.getColumnIndex("cl"));
+                            String fileExt = MimeTypeMap.getSingleton()
+                                    .getExtensionFromMimeType(contentType);
+
+                            //save attachment to sd card and store in hashmap as File
+                            //save bytes to 300KB buffer
+                            byte[] attachmentBytes = MmsIO.readFromUri(
+                                    getApplicationContext(), uri);
+                            File mediaFile = null;
+                            try{
+                                mediaFile = MmsIO.newMmsMediaFile(String.format("outgoing.%d.%s",
+                                        System.currentTimeMillis(), fileExt));
+                            }catch(IOException e){
+                                Log.e("ON_MMS_PART", "Could not create new media file!", e);
+                            }
+                            if(attachmentBytes != null && mediaFile != null){
+                                MmsIO.writeToFile(attachmentBytes, mediaFile);
+                                MmsContainer mms = pendingMms.get(mmsId);
+                                String attachmentKey = twoDigitNumber(mms.attachmentCount);
+                                mms.attachments.put(attachmentKey, mediaFile);
+                                mms.mimes.put(attachmentKey, contentType);
+                                mms.filenameMap.put(filename, attachmentKey);
+                                mms.attachmentCount += 1;
+                                mms.attachmentSize += attachmentBytes.length;
+                                Log.d("MMS_PART_OUT", String.format("Attachment %s is %d bytes.",
+                                        attachmentKey, attachmentBytes.length));
+                                if(mms.textOnly){
+                                    mms.textOnly = false;
+                                }
+                                pendingMms.put(mmsId, mms);
+                            }
+                            break;
+                        }
+
+                    }
+                }
+                cursor.close();
+            }
         }
     }
 
@@ -563,11 +747,14 @@ public class MainActivity extends AppCompatActivity {
         long date = -1;
         int msgBox = -1;
         int read = -1;
-        int attachmentCount;
+        int attachmentCount = 0;
+        int attachmentSize = 0;
+        ArrayList<String> handledParts = new ArrayList<>();
         ConcurrentHashMap<String, File> attachments = new ConcurrentHashMap<>();
         ConcurrentHashMap<String, String> mimes = new ConcurrentHashMap<>();
         ConcurrentHashMap<String, byte[]> finishingSequences = new ConcurrentHashMap<>();
-        String smil = "";
+        ConcurrentHashMap<String, String> filenameMap = new ConcurrentHashMap<>();
+        SmilObject smil = null;
 
         boolean isFilled(){
             boolean noNulls = date > -1 && msgBox > -1 && read > -1;
@@ -575,13 +762,149 @@ public class MainActivity extends AppCompatActivity {
                     ((attachments.size() > 0) == mimes.size() > 0);
             boolean hasAllAtmnts = attachmentCount == attachments.size();
             return attachmentCondition && hasAllAtmnts && noNulls &&
-                    address.length() > 0 && smil.length() > 0;
+                    address.length() > 0 && smil != null;
         }
 
-        String getAttachmentCl(String attachmentKey){
+        boolean isFilledForEncoding(){
+            return (attachments.size() == attachmentCount) && (mimes.size() == attachmentCount)
+                    && smil != null && !address.equals("");
+        }
+
+        String getNewAttachmentCl(String attachmentKey){
             String fileExt = MimeTypeMap.getSingleton()
                     .getExtensionFromMimeType(mimes.get(attachmentKey));
             return "media_" + attachmentKey + "." + fileExt;
+        }
+
+        void encodeAndSend(){
+            //encode header - root info + text and address
+            BtConnectionManager btcm = BtConnectionManager.getInstance();
+            int textOnlyInt = 0;
+            if(textOnly){ textOnlyInt = 1; }
+            byte[] header = (PayloadIDs.MMS_HEADER + Integer.toString(textOnlyInt) +
+                                twoDigitNumber(attachmentCount) + twoDigitNumber(address.length()) +
+                                address + text + PayloadIDs.DELIMITER_STRING).getBytes();
+
+            //encode SMIL
+            Enumeration<String> filenames = filenameMap.keys();
+            while(filenames.hasMoreElements()){
+                String filename = filenames.nextElement();
+                String key = filenameMap.get(filename);
+                smil.remapMediaSource(filename, key);
+            }
+            byte[] smilPart = (PayloadIDs.MMS_PART_LAYOUT + smil.toJSON() + PayloadIDs.DELIMITER_STRING)
+                                .getBytes();
+
+            byte[] attachmentBuffer = new byte[1024]; //1KB buffer for parsing attachment
+
+            btcm.write(header);
+            btcm.write(smilPart);
+            Log.d("SEND_MMS", "Sending: "+new String(header));
+            Log.d("SEND_MMS", "Sending: "+new String(smilPart));
+
+            File allAtmnts = encodeAttachments();
+            Log.d("SEND_MMS", String.format("Total Attachment (as read): %d bytes\n" +
+                    "Total after encoding (from file): %d bytes", this.attachmentSize, allAtmnts.length()));
+            FileInputStream fis;
+            try{
+                fis = new FileInputStream(allAtmnts);
+            }catch(FileNotFoundException e){
+                Log.e("ENCODE_MMS", "Could not open total attachment FIS!", e);
+                return;
+            }
+            try{
+                int bytesRead = fis.read(attachmentBuffer);
+                while(bytesRead != -1){
+                    if(bytesRead < 1024) {
+                        //under 1KB, so copy into a new buffer to avoid re-sending stale bytes
+                        //from previous iteration
+                        byte[] remainingBytes = new byte[bytesRead];
+                        System.arraycopy(attachmentBuffer, 0, remainingBytes, 0, bytesRead);
+                        btcm.write(remainingBytes);
+                        //Log.d("SEND_MMS", "Sending: "+ new String(remainingBytes));
+
+                    }else{
+                        btcm.write(attachmentBuffer);
+                        //Log.d("SEND_MMS", "Sending: "+ new String(attachmentBuffer));
+                    }
+
+                    bytesRead = fis.read(attachmentBuffer);
+                }
+
+            }catch(IOException e){
+                Log.e("ENCODE_MMS", "Could not read from total attachment file!", e);
+            }
+
+            //delete the raw and encoded attachment files
+            allAtmnts.delete();
+            Enumeration<File> filesEnum = attachments.elements();
+            while(filesEnum.hasMoreElements()){
+                File file = filesEnum.nextElement();
+                file.delete();
+            }
+
+        }
+
+        File encodeAttachments(){
+            File encodedFile;
+            try{
+                encodedFile = MmsIO.newMmsMediaFile(String.format("encoded_%d.atmnt",
+                        System.currentTimeMillis()));
+            }catch(IOException e){
+                Log.e("ENCODE_ATTACHMENTS", "Could not create encoded attachment file!", e);
+                return null;
+            }
+            Enumeration<String> keysEnum = attachments.keys();
+            while(keysEnum.hasMoreElements()){
+                String key = keysEnum.nextElement();
+                File atmntFile = attachments.get(key);
+                String mime = mimes.get(key);
+                String mimeLen = twoDigitNumber(mime.length());
+
+                BufferedInputStream fis;
+                BufferedOutputStream fos;
+                try{
+                    fis = new BufferedInputStream(new FileInputStream(atmntFile));
+                    fos = new BufferedOutputStream(new FileOutputStream(encodedFile));
+                }catch(FileNotFoundException e){
+                    Log.e("ENCODE_ATTACHMENTS",
+                            "Could not find attachment file "+atmntFile.getAbsolutePath(), e);
+                    return null;
+                }
+                try{
+                    fos.write(PayloadIDs.MMS_PART_ATTACHMENT);
+                    fos.write(key.getBytes());
+                    fos.write(mimeLen.getBytes());
+                    fos.write(mime.getBytes());
+                    int nextByte = fis.read();
+                    while(nextByte != -1){
+                        fos.write(nextByte);
+                        if(nextByte == PayloadIDs.DELIMITER_BYTE){
+                            fos.write(PayloadIDs.MMS_PART_ATTACHMENT);
+                            fos.write(key.getBytes());
+                        }
+                        nextByte = fis.read();
+                    }
+
+                    //once finished encoding, write "END{key}{delimiter}" to signify end of file
+                    //statistically improbable that this byte segment would occur naturally
+                    //also what else am I meant to do
+                    fos.write(("END"+key+PayloadIDs.DELIMITER_STRING).getBytes());
+                    fos.flush();
+                    fos.close();
+                }catch(IOException e){
+                    Log.e("ENCODE_ATTACHMENTS", "Failed to read from "+atmntFile.getAbsolutePath(), e);
+                    return null;
+                }finally{
+                    try{
+                        fis.close();
+                        fos.close();
+                    }catch(IOException e){
+                        Log.e("ENCODE_ATTACHMENT", "Could not close file streams!", e);
+                    }
+                }
+            }
+            return encodedFile;
         }
     }
 
@@ -638,7 +961,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    class SmilObject{
+    static class SmilObject{
         class Media{
             String type;
             String region;
@@ -652,6 +975,20 @@ public class MainActivity extends AppCompatActivity {
 
             String toXmlString(){
                 return String.format("<%s src=\"%s\" region=\"%s\"/>", type, src, region);
+            }
+
+            JSONObject toJSONObject(){
+                JSONObject self = new JSONObject();
+                try{
+                    self.put("type", type);
+                    self.put("src", src);
+                    self.put("region", region);
+                    return self;
+
+                }catch(JSONException e){
+                    Log.e("SMIL_TOJSON", "Could not convert media to JSON!", e);
+                    return null;
+                }
             }
         }
         class Slide{
@@ -671,21 +1008,55 @@ public class MainActivity extends AppCompatActivity {
                 xmlString += "</par>";
                 return xmlString;
             }
+
+            JSONObject toJSONObject(){
+                JSONObject self = new JSONObject();
+                try{
+                    self.put("dur", duration);
+                    JSONArray media = new JSONArray();
+                    for(Media m: this.media){
+                        media.put(m.toJSONObject());
+                    }
+                    self.put("media", media);
+                    return self;
+
+                }catch(JSONException e){
+                    Log.e("SMIL_TOJSON", "Could not convert slide to JSON!", e);
+                    return null;
+                }
+            }
         }
 
         ArrayList<String> regions = new ArrayList<>();
         ArrayList<Slide> slides = new ArrayList<>();
+        int totalMedia = -1;
 
-        SmilObject(String jsonString){
-            parseJSON(jsonString);
-        }
-
+        SmilObject(){}
         SmilObject(ArrayList<String> regions, ArrayList<Slide> slides){
             this.regions = regions;
             this.slides = slides;
         }
 
+        String toJSON(){
+            JSONObject self = new JSONObject();
+            try{
+                self.put("regions", new JSONArray(regions));
+                JSONArray slides = new JSONArray();
+                for(Slide slide: this.slides){
+                    slides.put(slide.toJSONObject());
+                }
+                self.put("pars", slides);
+                return self.toString(0); //0 indent spaces
+
+            }catch(JSONException e){
+                Log.e("SMIL_TOJSON", "Could not convert SMIL to JSON!", e);
+                return null;
+            }
+        }
+
         void parseJSON(String jsonString){
+            totalMedia = 0;
+            SmilObject newSmil;
             JSONObject json;
             try{
                 json = new JSONObject(jsonString);
@@ -723,6 +1094,9 @@ public class MainActivity extends AppCompatActivity {
                         String mediaSource = media.getString("src");
                         Media mediaObj = new Media(mediaType, mediaRegion, mediaSource);
                         parMedia.add((mediaObj));
+                        if(!mediaType.equals("text")){
+                            totalMedia += 1;
+                        }
                     }
                     Slide slide = new Slide(duration, parMedia);
                     slides.add(slide);
@@ -744,6 +1118,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         String toXml(){
+            totalMedia = 0;
             String xmlString = "";
             //open smil, head, and layout tags and add regions
             xmlString += "<smil><head><layout><root-layout/>";
@@ -758,6 +1133,202 @@ public class MainActivity extends AppCompatActivity {
             }
             xmlString += "</body></smil>";
             return xmlString;
+        }
+
+        void parseXml(InputStream streamIn){
+            XmlPullParserFactory factory;
+            XmlPullParser parser;
+            try{
+                factory = XmlPullParserFactory.newInstance();
+                parser = factory.newPullParser();
+                parser.setInput(streamIn, null);
+
+                String currentDur = null;
+                ArrayList<Media> currentElements = new ArrayList<>();
+                int eventType = parser.getEventType();
+                while(eventType != XmlPullParser.END_DOCUMENT){
+                    switch(eventType){ //switch on tag name
+                        case XmlPullParser.START_TAG: {
+                            //start of xml tag
+                            switch(parser.getName()){
+                                case "region": {
+                                    String id = parser.getAttributeValue(null, "id");
+                                    regions.add(id);
+                                    break;
+                                }
+                                case "par": {
+                                    if(currentDur == null){
+                                        currentDur = parser.getAttributeValue(null, "dur");
+                                    }
+                                    break;
+                                }
+                                case "img":
+                                case "video":
+                                case "audio":
+                                case "text": {
+                                    String source = parser.getAttributeValue(null, "src");
+                                    String region = parser.getAttributeValue(null, "region");
+                                    currentElements.add(new Media(parser.getName(), region, source));
+                                    if(!parser.getName().equals("text")){
+                                        totalMedia += 1;
+                                    }
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+
+                        case XmlPullParser.END_TAG: {
+                            if(parser.getName().equals("par") && currentDur != null){
+                                slides.add(new Slide(currentDur, currentElements));
+                            }
+                            break;
+                        }
+                    }
+                    try{
+                        eventType = parser.next();
+                    }catch(IOException e){
+                        Log.e("PARSE_XML", "Couldn't get next event type!", e);
+                        return;
+                    }
+                }
+
+            } catch(XmlPullParserException e){
+                Log.e("PASRSE_XML", "Could not parse SMIL XML!", e);
+                return;
+            }
+        }
+    }
+
+    static class MmsIO{
+        static File newMmsMediaFile(String filename) throws IOException{
+            String state = Environment.getExternalStorageState();
+            if(!Environment.MEDIA_MOUNTED.equals(state)){
+                throw new IOException(String.format(
+                        "Failed to write to SD card because external storage is in state \"%s\"",
+                        state));
+            }
+            //if SD card is mounted and writeable
+            File sdRoot = Environment.getExternalStorageDirectory();
+            File mediaDir = new File(sdRoot, "mms-media");
+            if(!mediaDir.exists()){
+                mediaDir.mkdirs();
+            }
+            return new File(mediaDir, filename);
+        }
+
+        static void writeToFile(byte[] data, File file){
+            FileOutputStream fos = null;
+            try{
+                fos = new FileOutputStream(file);
+            }catch(FileNotFoundException e){
+                Log.e("WRITE_FILE", "Could not open FileOutputStream to file at " +
+                        file.getAbsolutePath(), e);
+            }
+
+            if(fos != null){
+                try{
+                    fos.write(data);
+                    fos.flush();
+                    fos.close();
+
+                }catch(IOException e){
+                    Log.e("WRITE_FILE", "Could not write to file at" + file.getAbsolutePath(), e);
+
+                }finally{
+                    try{
+                        fos.close();
+                    }catch(IOException e){
+                        Log.e("WRITE_FILE", "Could not close File Output Stream!", e);
+                    }
+                }
+            }
+        }
+
+        static byte[] readFromFile(File file){
+            FileInputStream attachmentIs;
+            try{
+                attachmentIs = new FileInputStream(file);
+            }catch(FileNotFoundException e){
+                Log.e("READ_FILE", "Could not open Input Stream to File at " +
+                        file.getAbsolutePath(), e);
+                return null;
+            }
+
+            byte[] atmntBytes = new byte[(int)file.length()];
+            try{
+                attachmentIs.read(atmntBytes);
+                attachmentIs.close();
+            }catch(IOException e){
+                Log.e("READ_FILE", "Could not read from Input Stream to File at " +
+                        file.getAbsolutePath(), e);
+                return null;
+            }finally{
+                try{
+                    attachmentIs.close();
+                }catch(IOException e){
+                    Log.e("READ_FILE", "Could not close FileInputStream!", e);
+                }
+            }
+            return atmntBytes;
+        }
+
+        static byte[] readFromUri(Context context, Uri uri){
+            InputStream is = null;
+            try{
+                is = context.getContentResolver().openInputStream(uri);
+            }catch(FileNotFoundException e){
+                Log.e("READ_URI", "Could not open Input Stream to URI " + uri.toString(), e);
+            }
+
+            if(is != null){
+                byte[] streamBuffer = new byte[1024*350]; //350KB buffer
+                try{
+                    int readBytes = is.read(streamBuffer);
+                    is.close();
+                    byte[] readContents = new byte[readBytes];
+                    System.arraycopy(streamBuffer, 0, readContents, 0, readBytes);
+                    return readContents;
+                }catch(IOException e){
+                    Log.e("READ_URI", "Cold not read from URI " + uri.toString(), e);
+                }finally{
+                    try{
+                        is.close();
+                    }catch(IOException e){
+                        Log.e("READ_URI", "Could not close Input Stream!", e);
+                    }
+                }
+            }
+            return null;
+        }
+
+        static void writeToUri(Context context, Uri uri, byte[] data){
+            OutputStream partOs;
+            try{
+                partOs = context.getContentResolver().openOutputStream(uri);
+            }catch(FileNotFoundException e){
+                Log.e("WRITE_URI", "Could not open Output Stream to URI " + uri.toString(), e);
+                return;
+            }
+
+            try{
+                if(partOs != null){
+                    partOs.write(data);
+                    partOs.flush();
+                    partOs.close();
+                }
+            }catch(IOException e){
+                Log.e("WRITE_URI", "Could not write to OutputStream at URI " + uri.toString(), e);
+                return;
+            }finally{
+                if (partOs != null){
+                    try{
+                        partOs.close();
+                    }catch(IOException e){
+                        Log.e("WRITE_URI", "Could not close OutputStream!", e);
+                    }
+                }
+            }
         }
     }
 
@@ -852,77 +1423,12 @@ public class MainActivity extends AppCompatActivity {
         return true;
     }
 
-    static File newMmsMediaFile(String filename) throws IOException{
-        String state = Environment.getExternalStorageState();
-        if(!Environment.MEDIA_MOUNTED.equals(state)){
-            throw new IOException(String.format(
-                    "Failed to write to SD card because external storage is in state \"%s\"",
-                    state));
+    static String twoDigitNumber(int number){
+        String str = Integer.toString(number);
+        if(number < 10){
+            str = "0" + str;
         }
-        //if SD card is mounted and writeable
-        File sdRoot = Environment.getExternalStorageDirectory();
-        File mediaDir = new File(sdRoot, "mms-media");
-        if(!mediaDir.exists()){
-            mediaDir.mkdirs();
-        }
-        return new File(mediaDir, filename);
-    }
-
-    static byte[] readFromFile(File file){
-        FileInputStream attachmentIs;
-        try{
-            attachmentIs = new FileInputStream(file);
-        }catch(FileNotFoundException e){
-            Log.e("MMS_HANDLER", "Could not open Output Stream to File at " +
-                    file.getAbsolutePath(), e);
-            return null;
-        }
-
-        byte[] atmntBytes = new byte[(int)file.length()];
-        try{
-            attachmentIs.read(atmntBytes);
-            attachmentIs.close();
-        }catch(IOException e){
-            Log.e("MMS_HANDLER", "Could not read from Output Stream to File at " +
-                    file.getAbsolutePath(), e);
-            return null;
-        }finally{
-            try{
-                attachmentIs.close();
-            }catch(IOException e){
-                Log.e("MMS_HANDLER", "Could not close FileInputStream!", e);
-            }
-        }
-        return atmntBytes;
-    }
-
-    static void writeToUri(Context context, Uri uri, byte[] data){
-        OutputStream partOs;
-        try{
-            partOs = context.getContentResolver().openOutputStream(uri);
-        }catch(FileNotFoundException e){
-            Log.e("MMS_HANDLER", "Could not open Output Stream to URI " + uri.toString(), e);
-            return;
-        }
-
-        try{
-            if(partOs != null){
-                partOs.write(data);
-                partOs.flush();
-                partOs.close();
-            }
-        }catch(IOException e){
-            Log.e("MMS_HANDLER", "Could not write to OutputStream at URI " + uri.toString(), e);
-            return;
-        }finally{
-            if (partOs != null){
-                try{
-                    partOs.close();
-                }catch(IOException e){
-                    Log.e("MMS_HANDLER", "Could not close OutputStream!", e);
-                }
-            }
-        }
+        return str;
     }
 
     void onBtInputReceived(byte[] data){
@@ -995,7 +1501,9 @@ public class MainActivity extends AppCompatActivity {
                     String str = new String(split);
                     String smilJson = str.substring(1, str.length());
                     MmsContainer mmsObj = btClientThread.getLatestMms();
-                    mmsObj.smil = smilJson;
+                    SmilObject smil = new SmilObject();
+                    smil.parseJSON(smilJson);
+                    mmsObj.smil = smil;
                     btClientThread.setLatestMms(mmsObj);
                     break;
                 }
@@ -1037,7 +1545,7 @@ public class MainActivity extends AppCompatActivity {
                         String filename = sdf.format(date) + "_" + attachmentKey + "." + fileExt;
                         File attachmentFile = null;
                         try{
-                            attachmentFile = newMmsMediaFile(filename);
+                            attachmentFile = MmsIO.newMmsMediaFile(filename);
                         }catch(IOException e){
                             Log.e("MMS_IN", "Could not create new attachment file!", e);
                         }
@@ -1128,7 +1636,7 @@ public class MainActivity extends AppCompatActivity {
                         "Address: %s\n" +
                         "SMIL?: %s\n" +
                         "Attachment Count: %d", mms.text, mms.address,
-                (mms.smil.length()>0), mms.attachmentCount));
+                (mms.smil != null), mms.attachmentCount));
 
         //get the contact's thread ID
         long threadID = getThreadId(mms.address);
@@ -1164,16 +1672,13 @@ public class MainActivity extends AppCompatActivity {
         Uri addrUri = Uri.parse("content://mms/"+mmsId+"/addr");
         getContentResolver().insert(addrUri, addrValues);
 
-        //get the SMIL and parse into a SmilObject
-        SmilObject smil = new SmilObject(mms.smil);
-
         Uri partTableUri = Uri.parse("content://mms/" + mmsId + "/part");
         if(!mms.textOnly) {
             //edit the SMIL and save each attachment to content://mms/part
             Enumeration<String> keyEnum = mms.attachments.keys();
             while (keyEnum.hasMoreElements()) {
                 String key = keyEnum.nextElement();
-                String contentLocation = mms.getAttachmentCl(key);
+                String contentLocation = mms.getNewAttachmentCl(key);
                 String mime = mms.mimes.get(key);
 
                 //insert attachment into part table
@@ -1190,15 +1695,15 @@ public class MainActivity extends AppCompatActivity {
                 }
 
                 File atmntFile = mms.attachments.get(key);
-                byte[] atmntBytes = readFromFile(atmntFile);
+                byte[] atmntBytes = MmsIO.readFromFile(atmntFile);
                 if (atmntBytes == null) {
                     Log.e("MMS_HANDLER", "Could not read attachment from file!");
                     return;
                 }
-                writeToUri(this, partUri, atmntBytes);
+                MmsIO.writeToUri(this, partUri, atmntBytes);
 
                 //update smil to replace attachment key with content location
-                smil.remapMediaSource(key, contentLocation);
+                mms.smil.remapMediaSource(key, contentLocation);
 
                 //delete media from SD card if user has requested so in settings
                 boolean saveMedia = (boolean) Appdata.get(this, Appdata.Keys.SAVE_MEDIA, true);
@@ -1222,17 +1727,17 @@ public class MainActivity extends AppCompatActivity {
             textValues.put("chset", 106);
             getContentResolver().insert(partTableUri, textValues);
 
-            smil.remapMediaSource("text", contentLocation);
+            mms.smil.remapMediaSource("text", contentLocation);
         }
 
         //save smil with its sources remapped to match table cl fields
-        String smilXml = smil.toXml();
+        String smilXml = mms.smil.toXml();
         ContentValues smilValues = new ContentValues();
         smilValues.put("text", smilXml);
         smilValues.put("ct", "application/smil");
         smilValues.put("cl", "smil.xml");
         smilValues.put("chset", 106);
-        getContentResolver().insert(partTableUri, smilValues);
+        Uri lastPartUri = getContentResolver().insert(partTableUri, smilValues);
 
         //send attachment for new MMS
         String contactName = getContactName(mms.address);
@@ -1475,22 +1980,31 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        settingsBtn.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View view) {
+                Intent intent = new Intent(getApplicationContext(), DebugActivity.class);
+                startActivity(intent);
+                return true;
+            }
+        });
 
-        outboxThread = new HandlerThread("OutboxObserver");
+
+        outboxThread = new HandlerThread("OutboxObservers");
         outboxThread.start();
         Handler handler = new Handler(outboxThread.getLooper());
-        outboxObserver = new OutboxObserver(handler);
-        getContentResolver().registerContentObserver(
-                outboxObserver.outboxUri,
-                true,
-                outboxObserver
-        );
+        smsOutboxObserver = new SmsOutboxObserver(handler);
+        mmsOutboxObserver = new MmsOutboxObserver(handler);
+        getContentResolver().registerContentObserver(smsOutboxObserver.smsUri, true, smsOutboxObserver);
+        getContentResolver().registerContentObserver(Uri.parse("content://mms-sms/conversations")
+                , true, mmsOutboxObserver);
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        getContentResolver().unregisterContentObserver(outboxObserver);
+        getContentResolver().unregisterContentObserver(smsOutboxObserver);
+        getContentResolver().unregisterContentObserver(mmsOutboxObserver);
         outboxThread.quit();
     }
 }

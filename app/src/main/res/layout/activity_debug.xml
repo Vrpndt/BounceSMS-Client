@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Debug Options"
+                android:textStyle="bold"
+                android:textSize="18sp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="MMS Content Viewer"
+                android:textStyle="bold"
+                android:textSize="16sp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="4dp"/>
+
+            <Button
+                android:id="@+id/loadMmsBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Load MMS"/>
+
+            <android.support.v7.widget.LinearLayoutCompat
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="View MMS with ID "
+                    />
+
+                <EditText
+                    android:id="@+id/mmsIdIn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="2"
+                    android:inputType="number"/>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text=" or latest"/>
+
+            </android.support.v7.widget.LinearLayoutCompat>
+
+            <TextView
+                android:id="@+id/mmsIdOut"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="ID: "/>
+
+            <TextView
+                android:id="@+id/mmsMsgboxOut"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Message Box:"/>
+
+            <TextView
+                android:id="@+id/mmsAddressOut"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Address: "/>
+
+            <TextView
+                android:id="@+id/mmsDateOut"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Date: "/>
+
+            <TextView
+                android:id="@+id/mmsTextOut"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Text: "/>
+
+            <TextView
+                android:id="@+id/mmsAtmntCountOut"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Attachment Count: "/>
+
+            <TextView
+                android:id="@+id/mmsClOut"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Filename Example: "/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Attachment (if applicable): "/>
+
+            <ImageView
+                android:id="@+id/mmsAtmntOut"
+                android:layout_width="match_parent"
+                android:layout_height="200dp"
+                android:scaleType="centerInside"
+                android:src="@android:drawable/ic_menu_report_image"
+                android:layout_marginTop="4dp"/>
+
+
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>
