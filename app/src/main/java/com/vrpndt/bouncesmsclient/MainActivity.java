@@ -52,7 +52,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.security.PrivilegedAction;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -374,7 +373,7 @@ public class MainActivity extends AppCompatActivity {
 
             } else {
                 Log.e("APPDATA",
-                        String.format("%s does not exist! What the fuck!! Returning new JSONObject.",
+                        String.format("%s does not exist! Returning new JSONObject.",
                                 appdataFilename));
             }
             return new JSONObject();
@@ -658,6 +657,8 @@ public class MainActivity extends AppCompatActivity {
                     Log.d("MMS_OUTBOX_OBSERVER", "Encoded and sent MMS with ID "+mmsId);
                 }else{
                     Log.d("MMS_OUTBOX_OBSERVER", "Checked MMS "+mmsId+" but isFilledForEncoding() is false!");
+                    Log.d("MMS_OUTBOX_OBSERVER", String.format("Encoded Atmnts: %d \nAtmnt Count: %d",
+                            mms.encodedAttachmentCount, mms.attachmentCount));
                 }
             }
         }
@@ -700,36 +701,36 @@ public class MainActivity extends AppCompatActivity {
                         default: {
                             //attachment content
                             String filename = cursor.getString(cursor.getColumnIndex("cl"));
-                            String fileExt = MimeTypeMap.getSingleton()
-                                    .getExtensionFromMimeType(contentType);
 
-                            //save attachment to sd card and store in hashmap as File
-                            //save bytes to 300KB buffer
-                            byte[] attachmentBytes = MmsIO.readFromUri(
-                                    getApplicationContext(), uri);
-                            File mediaFile = null;
-                            try{
-                                mediaFile = MmsIO.newMmsMediaFile(String.format("outgoing.%d.%s",
-                                        System.currentTimeMillis(), fileExt));
-                            }catch(IOException e){
-                                Log.e("ON_MMS_PART", "Could not create new media file!", e);
-                            }
-                            if(attachmentBytes != null && mediaFile != null){
-                                MmsIO.writeToFile(attachmentBytes, mediaFile);
-                                MmsContainer mms = pendingMms.get(mmsId);
-                                String attachmentKey = twoDigitNumber(mms.attachmentCount);
-                                mms.attachments.put(attachmentKey, mediaFile);
-                                mms.mimes.put(attachmentKey, contentType);
-                                mms.filenameMap.put(filename, attachmentKey);
-                                mms.attachmentCount += 1;
-                                mms.attachmentSize += attachmentBytes.length;
-                                Log.d("MMS_PART_OUT", String.format("Attachment %s is %d bytes.",
-                                        attachmentKey, attachmentBytes.length));
-                                if(mms.textOnly){
-                                    mms.textOnly = false;
+                            //instead of saving to sd card then reloading to encode, just
+                            //encode on the first pass through when reading from mms part table
+                            MmsContainer mms = pendingMms.get(mmsId);
+                            String attachmentKey = twoDigitNumber(mms.attachmentCount);
+                            File atmntFile = mms.encodedAttachments;
+
+                            if(atmntFile == null){
+                                //attachment file has not been created, so do that
+                                try{
+                                    long time = System.currentTimeMillis();
+                                    atmntFile = MmsIO.newMmsMediaFile(
+                                            String.format("outgoing_%d.atmnt", time));
+                                    mms.encodedAttachments = atmntFile;
+                                }catch(IOException e){
+                                    Log.e("MMS_OUTBOX_OBSERVER",
+                                            "Could not create encoded attachment file!", e);
+                                    return;
                                 }
-                                pendingMms.put(mmsId, mms);
                             }
+
+                            MmsIO.readAndEncodeAtmnt(getApplicationContext(), uri,
+                                    attachmentKey, contentType, atmntFile);
+                            mms.mimes.put(attachmentKey, contentType);
+                            mms.filenameMap.put(filename, attachmentKey);
+                            mms.encodedAttachmentCount += 1;
+                            if(mms.textOnly){
+                                mms.textOnly = false;
+                            }
+                            pendingMms.put(mmsId, mms);
                             break;
                         }
 
@@ -754,9 +755,11 @@ public class MainActivity extends AppCompatActivity {
         ConcurrentHashMap<String, String> mimes = new ConcurrentHashMap<>();
         ConcurrentHashMap<String, byte[]> finishingSequences = new ConcurrentHashMap<>();
         ConcurrentHashMap<String, String> filenameMap = new ConcurrentHashMap<>();
+        File encodedAttachments = null;
+        int encodedAttachmentCount = 0;
         SmilObject smil = null;
 
-        boolean isFilled(){
+        boolean isFilledForDecoding(){
             boolean noNulls = date > -1 && msgBox > -1 && read > -1;
             boolean attachmentCondition = ((!textOnly) == (attachments.size() > 0)) &&
                     ((attachments.size() > 0) == mimes.size() > 0);
@@ -766,7 +769,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         boolean isFilledForEncoding(){
-            return (attachments.size() == attachmentCount) && (mimes.size() == attachmentCount)
+            return (encodedAttachmentCount == attachmentCount) && (mimes.size() == attachmentCount)
                     && smil != null && !address.equals("");
         }
 
@@ -802,12 +805,12 @@ public class MainActivity extends AppCompatActivity {
             Log.d("SEND_MMS", "Sending: "+new String(header));
             Log.d("SEND_MMS", "Sending: "+new String(smilPart));
 
-            File allAtmnts = encodeAttachments();
             Log.d("SEND_MMS", String.format("Total Attachment (as read): %d bytes\n" +
-                    "Total after encoding (from file): %d bytes", this.attachmentSize, allAtmnts.length()));
+                    "Total after encoding (from file): %d bytes", this.attachmentSize,
+                    encodedAttachments.length()));
             FileInputStream fis;
             try{
-                fis = new FileInputStream(allAtmnts);
+                fis = new FileInputStream(encodedAttachments);
             }catch(FileNotFoundException e){
                 Log.e("ENCODE_MMS", "Could not open total attachment FIS!", e);
                 return;
@@ -836,7 +839,7 @@ public class MainActivity extends AppCompatActivity {
             }
 
             //delete the raw and encoded attachment files
-            allAtmnts.delete();
+            encodedAttachments.delete();
             Enumeration<File> filesEnum = attachments.elements();
             while(filesEnum.hasMoreElements()){
                 File file = filesEnum.nextElement();
@@ -1136,6 +1139,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         void parseXml(InputStream streamIn){
+            totalMedia = 0;
             XmlPullParserFactory factory;
             XmlPullParser parser;
             try{
@@ -1329,6 +1333,54 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
             }
+        }
+
+        static boolean readAndEncodeAtmnt(Context context, Uri uri,
+                                          String atmntKey, String mime, File outputFile){
+            BufferedInputStream is = null;
+            BufferedOutputStream fos = null;
+            try{
+                is = new BufferedInputStream(context.getContentResolver().openInputStream(uri));
+                fos = new BufferedOutputStream(new FileOutputStream(outputFile));
+            }catch(FileNotFoundException e){
+                Log.e("READ_URI", "Could not open Input Stream or File Output Stream!", e);
+            }
+
+            if(is != null && fos != null){
+                try{
+                    String mimeLen = twoDigitNumber(mime.length());
+                    fos.write(PayloadIDs.MMS_PART_ATTACHMENT);
+                    fos.write(atmntKey.getBytes());
+                    fos.write(mimeLen.getBytes());
+                    fos.write(mime.getBytes());
+                    int nextByte = is.read();
+                    while(nextByte != -1) {
+                        fos.write(nextByte);
+                        if (nextByte == PayloadIDs.DELIMITER_BYTE) {
+                            fos.write(PayloadIDs.MMS_PART_ATTACHMENT);
+                            fos.write(atmntKey.getBytes());
+                        }
+                        nextByte = is.read();
+                    }
+                    //once finished encoding, write "END{key}{delimiter}" to signify end of file
+                    //statistically improbable that this byte segment would occur naturally
+                    //also what else am I meant to do
+                    fos.write(("END"+atmntKey+PayloadIDs.DELIMITER_STRING).getBytes());
+                    fos.flush();
+                    fos.close();
+                    return true;
+                }catch(IOException e){
+                    Log.e("READ_URI", "Could not read from URI or write to File!", e);
+                }finally{
+                    try{
+                        is.close();
+                        fos.close();
+                    }catch(IOException e){
+                        Log.e("READ_URI", "Could not close Input Stream or File Output Stream!", e);
+                    }
+                }
+            }
+            return false;
         }
     }
 
@@ -1573,7 +1625,7 @@ public class MainActivity extends AppCompatActivity {
                             btClientThread.setLatestMms(mmsObj);
                             Log.d("BT_IN", "Finished MMS attachment with ID " + attachmentKey);
 
-                            if(mmsObj.isFilled()){
+                            if(mmsObj.isFilledForDecoding()){
                                 //MMS has been successfully received
                                 handleNewMMS(btClientThread.getLatestMms());
                                 btClientThread.clearLatestMms();
