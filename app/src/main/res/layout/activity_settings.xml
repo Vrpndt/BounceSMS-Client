@@ -44,31 +44,6 @@
                 android:layout_height="wrap_content"
                 android:orientation="horizontal">
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Automatically sync every "
-                    />
-
-                <EditText
-                    android:id="@+id/autosyncInput"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:ems="2"
-                    android:inputType="number"/>
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text=" days."/>
-
-            </android.support.v7.widget.LinearLayoutCompat>
-
-            <android.support.v7.widget.LinearLayoutCompat
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
                 <Button
                     android:id="@+id/syncNowBtn"
                     android:layout_width="wrap_content"
@@ -96,7 +71,7 @@
                 android:id="@+id/autoSaveMms"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Save MMS media to SD card"/>
+                android:text="Save new MMS media to SD card"/>
 
             <Button
                 android:id="@+id/saveExitBtn"

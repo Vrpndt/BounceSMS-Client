@@ -1,8 +1,6 @@
 package com.vrpndt.bouncesmsclient;
 
 import android.app.Notification;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
@@ -17,7 +15,6 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.provider.ContactsContract;
-import android.support.v4.app.NotificationCompat;
 import android.support.v7.app.AlertDialog;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
@@ -32,6 +29,11 @@ import android.widget.ListAdapter;
 import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import com.vrpndt.bouncesmsclient.util.Notifications;
+import com.vrpndt.bouncesmsclient.util.PayloadIDs;
+import com.vrpndt.bouncesmsclient.util.MmsIO;
+import com.vrpndt.bouncesmsclient.util.Appdata;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -64,20 +66,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class MainActivity extends AppCompatActivity {
 
-
-    public static final String delimiter = String.valueOf((char)0x1e);
-
-    public static final class PayloadIDs{
-        public static final char SMS_MESSAGE = 'S';
-        public static final char SYNC_REQUEST = 'I';
-        public static final char SYNC_UPDATE = 'U';
-        public static final char MMS_HEADER = 'M';
-        public static final char MMS_PART_ATTACHMENT = 'A';
-        public static final char MMS_PART_LAYOUT = 'L';
-        public static final String DELIMITER_STRING = String.valueOf((char)0x1e);
-        public static final byte DELIMITER_BYTE = (byte)0x1e;
-    }
-
     private ListView btDeviceList;
     //private Button refreshDevicesBtn;
     private Button dcBtDeviceBtn;
@@ -90,6 +78,8 @@ public class MainActivity extends AppCompatActivity {
     private SmsOutboxObserver smsOutboxObserver;
     private MmsOutboxObserver mmsOutboxObserver;
     private HandlerThread outboxThread;
+
+    public static File internalStorage;
 
     private class BtClientConnector extends Thread {
         BluetoothSocket btSocket;
@@ -167,7 +157,9 @@ public class MainActivity extends AppCompatActivity {
         private byte[] ioBuffer = new byte[1024];
         private byte[] lastInputChunk = null;
         private MmsContainer latestMms = new MmsContainer();
-        public AttachmentBuilder attachmentBuilder = new AttachmentBuilder();
+        public AttachmentBuilder newMmsAb = new AttachmentBuilder();
+        public AttachmentBuilder mmsSyncAb = new AttachmentBuilder();
+        public HashMap<String, Uri> mmsSyncAtmntTable = new HashMap<>();
 
         private BtClientThread(BluetoothSocket socket){
             btSocket = socket;
@@ -197,6 +189,16 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }catch (IOException e){
                     Log.e("BT_IO", "Bluetooth Input Stream Ended.", e);
+                    uiHandler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            updateBtDeviceText(null, -1);
+                            Notifications.sendInfoNotif(
+                                    MainActivity.this,
+                                    "Device Disconnected",
+                                    "BounceSMS is no longer connected to the host device!");
+                        }
+                    });
                     break;
                 }
 
@@ -322,103 +324,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    static class Appdata {
-        public static final String appdataFilename = "appdata.json";
-
-        public static final class Keys{
-            public static final String SYNC_AFTER = "syncAfter";
-            public static final String AUTO_SYNC = "autoSync";
-            public static final String SAVE_MEDIA = "saveMedia";
-            public static final String LAST_SYNC = "lastSync";
-            public static final String LAST_HOST = "lastHost";
-            public static final String LAST_MMS_ROOT = "lastMmsRoot";
-            public static final String LAST_MMS_PART = "lastMmsPart";
-            public static final String LAST_MMS_ADDR = "lastMmsAddr";
-        }
-
-        private static JSONObject getAppdataJSON(Context context) {
-            File appdataFile = new File(context.getFilesDir(), appdataFilename);
-            String fileContents;
-            if (appdataFile.exists()) {
-                try {
-                    //read the appdata.json file
-                    FileInputStream fis = context.openFileInput(appdataFile.getName());
-                    InputStreamReader isr = new InputStreamReader(fis);
-                    StringBuilder stringBuilder = new StringBuilder();
-                    BufferedReader reader = new BufferedReader(isr);
-
-                    String line = reader.readLine();
-                    while (line != null) {
-                        stringBuilder.append(line).append('\n');
-                        line = reader.readLine();
-                    }
-                    fileContents = stringBuilder.toString();
-                    fis.close();
-                } catch (IOException e) {
-                    Log.e("APPDATA",
-                            String.format("%s could not be opened. Returning new JSONObject...",
-                                    appdataFilename), e);
-                    return new JSONObject();
-                }
-
-                try {
-                    //parse the file's contents into a JSON Object
-                    return new JSONObject(fileContents);
-
-                } catch (JSONException e) {
-                    Log.e("APPDATA",
-                            String.format("%s could not be parsed. Returning new JSONObject.",
-                                    appdataFilename), e);
-                }
-
-            } else {
-                Log.e("APPDATA",
-                        String.format("%s does not exist! Returning new JSONObject.",
-                                appdataFilename));
-            }
-            return new JSONObject();
-        }
-
-        public static Object get(Context context, String key, Object defaultValue) {
-            JSONObject appdataJSON = getAppdataJSON(context);
-            try {
-                Object value = appdataJSON.get(key);
-                Log.d("APPDATA", String.format("Got %s as %s from appdata",
-                        key, value));
-                return value;
-            } catch (JSONException e) {
-                Log.e("APPDATA", String.format("Could not get %s from appdata!", key));
-                return defaultValue;
-            }
-        }
-
-        public static boolean put(Context context, String key, Object value) {
-            JSONObject appdataJSON = getAppdataJSON(context);
-            try {
-                appdataJSON.put(key, value);
-                String JSONString = appdataJSON.toString();
-                if (JSONString != null) {
-                    try {
-                        //overwrite current file contents with updated JSON string
-                        FileOutputStream fos = context.openFileOutput(appdataFilename,
-                                Context.MODE_PRIVATE);
-                        fos.write(JSONString.getBytes());
-                        fos.close();
-                        Log.d("APPDATA", String.format("Updated %s to %s", key, value));
-                    } catch (Exception e) {
-                        Log.e("APPDATA", String.format("Could not write to %s",
-                                appdataFilename), e);
-                        return false;
-                    }
-                }
-            } catch (JSONException e) {
-                Log.e("APPDATA", "Unable to write values to JSONObject!", e);
-                return false;
-            }
-            return true;
-        }
-    }
-
     private class SmsOutboxObserver extends ContentObserver {
         private final Uri smsUri = Uri.parse("content://sms");
 
@@ -475,10 +380,10 @@ public class MainActivity extends AppCompatActivity {
         }
 
         private void handlePendingSms(String id, String address, String content){
-            BtConnectionManager.getInstance().write(encodeSMS(address, content));
+            BtConnectionManager.getInstance().write(encodeSMS(id, address, content));
 
             //update type in messages in content://sms from 5/6 to 2
-            ContentValues updatedSMS = new ContentValues();
+            /*ContentValues updatedSMS = new ContentValues();
             updatedSMS.put("type", 2);
             String[] idArgs = {id};
             getContentResolver().update(
@@ -486,7 +391,7 @@ public class MainActivity extends AppCompatActivity {
                     updatedSMS,
                     "_id = ?",
                     idArgs
-            );
+            );*/
         }
     }
 
@@ -525,6 +430,7 @@ public class MainActivity extends AppCompatActivity {
                         String threadId = cursor.getString(cursor.getColumnIndex("thread_id"));
                         long date = cursor.getLong(cursor.getColumnIndex("date"));
                         MmsContainer newMms = new MmsContainer();
+                        newMms.id = mmsId;
                         newMms.textOnly = false;
                         newMms.msgBox = 2;
                         newMms.read = 0;
@@ -629,6 +535,11 @@ public class MainActivity extends AppCompatActivity {
                 if(mms.isFilledForEncoding()){
                     pendingMms.remove(mmsId);
                     pendingMmsIds.remove(mmsId);
+
+                    //if the handled mms list is getting large, clear old items before continuing
+                    if(handledMmsIds.size() >= 5){
+                        handledMmsIds.clear();
+                    }
                     handledMmsIds.add(mmsId);
                     Log.d("MMS_OUTBOX_OBSERVER",
                             String.format(
@@ -644,7 +555,7 @@ public class MainActivity extends AppCompatActivity {
                             ));
                     mms.encodeAndSend();
                     //update msg_box in content://mms to 2 (sent)
-                    ContentValues updatedMms = new ContentValues();
+                    /*ContentValues updatedMms = new ContentValues();
                     updatedMms.put("msg_box", 2);
                     String[] idArgs = {mmsId};
                     getContentResolver().update(
@@ -652,8 +563,8 @@ public class MainActivity extends AppCompatActivity {
                             updatedMms,
                             "_id = ?",
                             idArgs
-                    );
-                    handledMmsIds.remove(mmsId);
+                    );*/
+
                     Log.d("MMS_OUTBOX_OBSERVER", "Encoded and sent MMS with ID "+mmsId);
                 }else{
                     Log.d("MMS_OUTBOX_OBSERVER", "Checked MMS "+mmsId+" but isFilledForEncoding() is false!");
@@ -742,6 +653,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     static class MmsContainer{
+        String id = "";
         boolean textOnly = false;
         String text = "";
         String address = "";
@@ -770,7 +682,7 @@ public class MainActivity extends AppCompatActivity {
 
         boolean isFilledForEncoding(){
             return (encodedAttachmentCount == attachmentCount) && (mimes.size() == attachmentCount)
-                    && smil != null && !address.equals("");
+                    && smil != null && !address.equals("") && !id.equals("");
         }
 
         String getNewAttachmentCl(String attachmentKey){
@@ -784,7 +696,8 @@ public class MainActivity extends AppCompatActivity {
             BtConnectionManager btcm = BtConnectionManager.getInstance();
             int textOnlyInt = 0;
             if(textOnly){ textOnlyInt = 1; }
-            byte[] header = (PayloadIDs.MMS_HEADER + Integer.toString(textOnlyInt) +
+            byte[] header = (PayloadIDs.MMS_HEADER + twoDigitNumber(id.length()) + id +
+                                Integer.toString(textOnlyInt) +
                                 twoDigitNumber(attachmentCount) + twoDigitNumber(address.length()) +
                                 address + text + PayloadIDs.DELIMITER_STRING).getBytes();
 
@@ -913,11 +826,13 @@ public class MainActivity extends AppCompatActivity {
 
     static class AttachmentBuilder {
         FileOutputStream fileOut = null;
+        File lastFile = null;
 
         void openFileOut(File file){
             closeFileOut();
             try{
                 fileOut = new FileOutputStream(file);
+                lastFile = file;
             }catch(FileNotFoundException e){
                 Log.e("ATMNT_BUILDER", "Could not open new FileOutputStream!", e);
             }
@@ -928,6 +843,8 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     fileOut.flush();
                     fileOut.close();
+                    fileOut = null;
+                    lastFile = null;
                 }catch(IOException e){
                     Log.e("ATMNT_BUILDER", "Could not close fieOut()!", e);
                 }
@@ -1204,186 +1121,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    static class MmsIO{
-        static File newMmsMediaFile(String filename) throws IOException{
-            String state = Environment.getExternalStorageState();
-            if(!Environment.MEDIA_MOUNTED.equals(state)){
-                throw new IOException(String.format(
-                        "Failed to write to SD card because external storage is in state \"%s\"",
-                        state));
-            }
-            //if SD card is mounted and writeable
-            File sdRoot = Environment.getExternalStorageDirectory();
-            File mediaDir = new File(sdRoot, "mms-media");
-            if(!mediaDir.exists()){
-                mediaDir.mkdirs();
-            }
-            return new File(mediaDir, filename);
-        }
-
-        static void writeToFile(byte[] data, File file){
-            FileOutputStream fos = null;
-            try{
-                fos = new FileOutputStream(file);
-            }catch(FileNotFoundException e){
-                Log.e("WRITE_FILE", "Could not open FileOutputStream to file at " +
-                        file.getAbsolutePath(), e);
-            }
-
-            if(fos != null){
-                try{
-                    fos.write(data);
-                    fos.flush();
-                    fos.close();
-
-                }catch(IOException e){
-                    Log.e("WRITE_FILE", "Could not write to file at" + file.getAbsolutePath(), e);
-
-                }finally{
-                    try{
-                        fos.close();
-                    }catch(IOException e){
-                        Log.e("WRITE_FILE", "Could not close File Output Stream!", e);
-                    }
-                }
-            }
-        }
-
-        static byte[] readFromFile(File file){
-            FileInputStream attachmentIs;
-            try{
-                attachmentIs = new FileInputStream(file);
-            }catch(FileNotFoundException e){
-                Log.e("READ_FILE", "Could not open Input Stream to File at " +
-                        file.getAbsolutePath(), e);
-                return null;
-            }
-
-            byte[] atmntBytes = new byte[(int)file.length()];
-            try{
-                attachmentIs.read(atmntBytes);
-                attachmentIs.close();
-            }catch(IOException e){
-                Log.e("READ_FILE", "Could not read from Input Stream to File at " +
-                        file.getAbsolutePath(), e);
-                return null;
-            }finally{
-                try{
-                    attachmentIs.close();
-                }catch(IOException e){
-                    Log.e("READ_FILE", "Could not close FileInputStream!", e);
-                }
-            }
-            return atmntBytes;
-        }
-
-        static byte[] readFromUri(Context context, Uri uri){
-            InputStream is = null;
-            try{
-                is = context.getContentResolver().openInputStream(uri);
-            }catch(FileNotFoundException e){
-                Log.e("READ_URI", "Could not open Input Stream to URI " + uri.toString(), e);
-            }
-
-            if(is != null){
-                byte[] streamBuffer = new byte[1024*350]; //350KB buffer
-                try{
-                    int readBytes = is.read(streamBuffer);
-                    is.close();
-                    byte[] readContents = new byte[readBytes];
-                    System.arraycopy(streamBuffer, 0, readContents, 0, readBytes);
-                    return readContents;
-                }catch(IOException e){
-                    Log.e("READ_URI", "Cold not read from URI " + uri.toString(), e);
-                }finally{
-                    try{
-                        is.close();
-                    }catch(IOException e){
-                        Log.e("READ_URI", "Could not close Input Stream!", e);
-                    }
-                }
-            }
-            return null;
-        }
-
-        static void writeToUri(Context context, Uri uri, byte[] data){
-            OutputStream partOs;
-            try{
-                partOs = context.getContentResolver().openOutputStream(uri);
-            }catch(FileNotFoundException e){
-                Log.e("WRITE_URI", "Could not open Output Stream to URI " + uri.toString(), e);
-                return;
-            }
-
-            try{
-                if(partOs != null){
-                    partOs.write(data);
-                    partOs.flush();
-                    partOs.close();
-                }
-            }catch(IOException e){
-                Log.e("WRITE_URI", "Could not write to OutputStream at URI " + uri.toString(), e);
-                return;
-            }finally{
-                if (partOs != null){
-                    try{
-                        partOs.close();
-                    }catch(IOException e){
-                        Log.e("WRITE_URI", "Could not close OutputStream!", e);
-                    }
-                }
-            }
-        }
-
-        static boolean readAndEncodeAtmnt(Context context, Uri uri,
-                                          String atmntKey, String mime, File outputFile){
-            BufferedInputStream is = null;
-            BufferedOutputStream fos = null;
-            try{
-                is = new BufferedInputStream(context.getContentResolver().openInputStream(uri));
-                fos = new BufferedOutputStream(new FileOutputStream(outputFile));
-            }catch(FileNotFoundException e){
-                Log.e("READ_URI", "Could not open Input Stream or File Output Stream!", e);
-            }
-
-            if(is != null && fos != null){
-                try{
-                    String mimeLen = twoDigitNumber(mime.length());
-                    fos.write(PayloadIDs.MMS_PART_ATTACHMENT);
-                    fos.write(atmntKey.getBytes());
-                    fos.write(mimeLen.getBytes());
-                    fos.write(mime.getBytes());
-                    int nextByte = is.read();
-                    while(nextByte != -1) {
-                        fos.write(nextByte);
-                        if (nextByte == PayloadIDs.DELIMITER_BYTE) {
-                            fos.write(PayloadIDs.MMS_PART_ATTACHMENT);
-                            fos.write(atmntKey.getBytes());
-                        }
-                        nextByte = is.read();
-                    }
-                    //once finished encoding, write "END{key}{delimiter}" to signify end of file
-                    //statistically improbable that this byte segment would occur naturally
-                    //also what else am I meant to do
-                    fos.write(("END"+atmntKey+PayloadIDs.DELIMITER_STRING).getBytes());
-                    fos.flush();
-                    fos.close();
-                    return true;
-                }catch(IOException e){
-                    Log.e("READ_URI", "Could not read from URI or write to File!", e);
-                }finally{
-                    try{
-                        is.close();
-                        fos.close();
-                    }catch(IOException e){
-                        Log.e("READ_URI", "Could not close Input Stream or File Output Stream!", e);
-                    }
-                }
-            }
-            return false;
-        }
-    }
-
 
 
     void displayPairedDevices(List<BluetoothDevice> pairedDevices, BluetoothAdapter btAdapter){
@@ -1460,7 +1197,7 @@ public class MainActivity extends AppCompatActivity {
         return splits;
     }
 
-    //more memory-efficient than splitting the array and checking that way for every loop
+    //more memory-efficient than splitting the array at specified indexes
     static boolean isSubArray(byte[] data, byte[] subArray, int startIdx){
         if(subArray.length > data.length){
             return false;
@@ -1475,7 +1212,7 @@ public class MainActivity extends AppCompatActivity {
         return true;
     }
 
-    static String twoDigitNumber(int number){
+    public static String twoDigitNumber(int number){
         String str = Integer.toString(number);
         if(number < 10){
             str = "0" + str;
@@ -1507,28 +1244,188 @@ public class MainActivity extends AppCompatActivity {
         for(int i=0; i < dataSplits.size(); i++) {
             byte[] split = dataSplits.get(i);
             char dataType = (char)split[0];
+            Log.d("BT_IN", "Got payload of type "+dataType+"!");
             switch(dataType){
                 case PayloadIDs.SMS_MESSAGE: { //Incoming SMS message (new)
                     String str = new String(split);
-                    int numLen = Integer.parseInt(str.substring(1, 3));
-                    String number = str.substring(3, numLen + 3);
-                    String content = str.substring(numLen + 3, str.length());
-                    handleNewSMS(number, content);
+                    int dateLen = Integer.parseInt(str.substring(1, 3));
+                    long date = Long.parseLong(str.substring(3, 3+dateLen));
+                    int numLen = Integer.parseInt(str.substring(3+dateLen, 5+dateLen));
+                    String number = str.substring(5+dateLen, 5+dateLen+numLen);
+                    String content = str.substring(5+dateLen+numLen, str.length());
+                    handleNewSMS(number, content, date);
                     break;
                 }
-                case PayloadIDs.SYNC_UPDATE: { //Incoming SMS Database content (updating/syncing old messages)
-                    String str = new String(split);
-                    int msgType = Integer.parseInt(str.substring(1, 2));
-                    int msgRead = Integer.parseInt(str.substring(2, 3));
-                    int dateLen = Integer.parseInt(str.substring(3, 5));
-                    long date = Long.parseLong(str.substring(5, dateLen+5));
-                    int numLen = Integer.parseInt(str.substring(dateLen+5, dateLen+7));
-                    String number = str.substring(dateLen+7, dateLen+numLen+7);
-                    String content = str.substring(dateLen+numLen+7, str.length());
-                    handleDatabaseUpdate(number, content, msgType, date, msgRead);
-                    //update last sync timestamp
-                    Appdata.put(getApplicationContext(), Appdata.Keys.LAST_SYNC,
-                            System.currentTimeMillis());
+                case PayloadIDs.SYNC_UPDATE: { //Incoming database content (syncing old SMS/MMS)
+                    char updateType = (char)split[1];
+                    Log.d("DB_UPDATE", "Update type: "+updateType);
+
+                    switch(updateType){
+                        case PayloadIDs.SMS_MESSAGE: {
+                            // content://sms update
+                            String str = new String(split);
+                            int msgType = Integer.parseInt(str.substring(2, 3));
+                            int msgRead = Integer.parseInt(str.substring(3, 4));
+                            int dateLen = Integer.parseInt(str.substring(4, 6));
+                            long date = Long.parseLong(str.substring(6, 6+dateLen));
+                            int numLen = Integer.parseInt(str.substring(6+dateLen, 8+dateLen));
+                            String number = str.substring(8+dateLen, 8+dateLen+numLen);
+                            String content = str.substring(8+dateLen+numLen, str.length());
+                            handleSmsDbUpdate(number, content, msgType, date, msgRead);
+                            //update last sync timestamp
+                            Appdata.put(getApplicationContext(), Appdata.Keys.LAST_SYNC,
+                                    System.currentTimeMillis());
+                            break;
+                        }
+
+                        case PayloadIDs.MMS_HEADER:{
+                            // content://mms update
+                            String str = new String(split);
+                            int idLen = Integer.parseInt(str.substring(2, 4));
+                            String mmsId = str.substring(4, 4+idLen);
+                            int msgBox = Integer.parseInt(str.substring(4+idLen, 5+idLen));
+                            int readInt = Integer.parseInt(str.substring(5+idLen, 6+idLen));
+                            int atmntCount = Integer.parseInt(str.substring(6+idLen, 8+idLen));
+                            int dateLen = Integer.parseInt(str.substring(8+idLen, 10+idLen));
+                            long date = Long.parseLong(str.substring(10+idLen, 10+idLen+dateLen));
+                            int addressLen = Integer.parseInt(str.substring(10+idLen+dateLen, 12+idLen+dateLen));
+                            String address = str.substring(12+idLen+dateLen, 12+idLen+dateLen+addressLen);
+
+                            handleMmsDbUpdate(mmsId, address, date, atmntCount, msgBox, readInt);
+                            break;
+                        }
+                        case PayloadIDs.MMS_PART_LAYOUT: {
+                            String str = new String(split);
+                            int idLen = Integer.parseInt(str.substring(2, 4));
+                            String hostId = str.substring(4, 4+idLen);
+
+                            String smilJSON = str.substring(4+idLen, str.length());
+                            SmilObject smil = new SmilObject();
+                            smil.parseJSON(smilJSON);
+                            String smilXml = smil.toXml();
+                            Log.d("SYNC_MMS", "SMIL: "+smilXml);
+
+                            ContentValues smilValues = new ContentValues();
+                            smilValues.put("text", smilXml);
+                            smilValues.put("ct", "application/smil");
+                            smilValues.put("cl", "smil.xml");
+                            smilValues.put("chset", 106);
+
+                            String clientId = (String)Appdata.get(getApplicationContext(), hostId, null);
+                            if(clientId != null) {
+                                Uri partTableUri = Uri.parse("content://mms/" + clientId + "/part");
+                                getContentResolver().insert(partTableUri, smilValues);
+                            }else{
+                                Log.e("MMS_SYNC", "Could not get client-side ID for host MMS "+hostId+"!");
+                            }
+                            break;
+                        }
+
+                        case PayloadIDs.MMS_UPDATE_TEXT: {
+                            String str = new String(split);
+                            int idLen = Integer.parseInt(str.substring(2, 4));
+                            String hostId = str.substring(4, 4+idLen);
+                            String text = str.substring(4+idLen, str.length());
+
+                            String contentLocation = "text_00.txt";
+                            ContentValues textValues = new ContentValues();
+                            textValues.put("text", text);
+                            textValues.put("ct", "text/plain");
+                            textValues.put("cl", contentLocation);
+                            textValues.put("name", contentLocation);
+                            textValues.put("chset", 106);
+
+                            String clientId = (String)Appdata.get(getApplicationContext(), hostId, null);
+                            if(clientId != null) {
+                                Uri partTableUri = Uri.parse("content://mms/" + clientId + "/part");
+                                getContentResolver().insert(partTableUri, textValues);
+                            }else{
+                                Log.e("MMS_SYNC", "Could not get client-side ID for host MMS "+hostId+"!");
+                            }
+                            break;
+                        }
+
+                        case PayloadIDs.MMS_PART_ATTACHMENT: {
+                            //composite key in form "{mmsId}{atmntKey}"
+                            byte[] idLenBytes = new byte[2];
+                            System.arraycopy(split, 2, idLenBytes, 0, 2);
+                            int idLen = Integer.parseInt(new String(idLenBytes));
+                            int compKeyLen = idLen+2;
+
+                            byte[] compKeyBytes = new byte[compKeyLen];
+                            System.arraycopy(split, 4, compKeyBytes, 0, compKeyLen);
+                            String compositeKey = new String(compKeyBytes);
+
+                            if(btClientThread.mmsSyncAb.fileOut == null){
+                                try{
+                                    File tempFile = MmsIO.newMmsMediaFile("temp_20260721.jpeg");
+                                    btClientThread.mmsSyncAb.openFileOut(tempFile);
+                                }catch(IOException e){
+                                    Log.e("TEMP_FILE", "Could not create temp file", e);
+                                }
+                            }
+
+                            if(btClientThread.mmsSyncAtmntTable.containsKey(compositeKey)){
+                                //atmnt is already being decoded, get uri and write to stream
+                                Uri partUri = btClientThread.mmsSyncAtmntTable.get(compositeKey);
+                                String atmntKey = compositeKey.substring(idLen, compKeyLen);
+                                byte[] endSeq = ("END"+atmntKey).getBytes();
+                                if(isSubArray(split, endSeq, split.length-endSeq.length)){
+                                    //this is the final segment in the attachment
+                                    btClientThread.mmsSyncAb.write(split, 4+compKeyLen,
+                                            split.length-(4+compKeyLen+endSeq.length));
+                                    byte[] atmntBytes = MmsIO.readFromFile(
+                                            btClientThread.mmsSyncAb.lastFile);
+                                    if(atmntBytes != null){
+                                        MmsIO.writeToUri(getApplicationContext(), partUri, atmntBytes);
+                                    }else{
+                                        Log.d("MMS_SYNC", "atmntBytes is null!");
+                                    }
+                                    btClientThread.mmsSyncAtmntTable.remove(compositeKey);
+                                    btClientThread.mmsSyncAb.lastFile.delete();
+                                    btClientThread.mmsSyncAb.closeFileOut();
+
+
+                                }else{
+                                    btClientThread.mmsSyncAb.write(split, 4+compKeyLen,
+                                            split.length - (4+compKeyLen));
+                                }
+
+                            }else{
+                                //this is a new attachment
+                                String hostId = compositeKey.substring(0, idLen);
+                                String atmntKey = compositeKey.substring(idLen, compKeyLen);
+                                String clientId = (String)Appdata.get(getApplicationContext(), hostId, null);
+                                if(clientId != null) {
+                                    byte[] mimeLenBytes = new byte[2];
+                                    System.arraycopy(split, 4+compKeyLen, mimeLenBytes, 0, 2);
+                                    int mimeLen = Integer.parseInt(new String(mimeLenBytes));
+
+                                    byte[] mimeBytes = new byte[mimeLen];
+                                    System.arraycopy(split, 6+compKeyLen, mimeBytes, 0, mimeLen);
+                                    String mime = new String(mimeBytes);
+                                    String fileExt = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
+                                    String contentLocation = "media_" + atmntKey + "." + fileExt;
+                                    Log.d("CL", "Attachment "+atmntKey+"'s cl: "+contentLocation);
+
+                                    Uri partTableUri = Uri.parse("content://mms/" + clientId + "/part");
+                                    ContentValues attachmentVals = new ContentValues();
+                                    attachmentVals.put("ct", mime);
+                                    attachmentVals.put("cl", contentLocation);
+                                    attachmentVals.put("name", contentLocation);
+                                    Uri partUri = getContentResolver().insert(partTableUri, attachmentVals);
+                                    btClientThread.mmsSyncAtmntTable.put(compositeKey, partUri);
+                                    btClientThread.mmsSyncAb.write(split, 6+compKeyLen+mimeLen,
+                                            split.length-(6+compKeyLen+mimeLen));
+
+                                }else{
+                                    Log.e("MMS_SYNC", "Could not get client-side ID for host MMS "+hostId+"!");
+                                }
+
+                            }
+                            break;
+                        }
+                    }
                     break;
                 }
 
@@ -1536,13 +1433,16 @@ public class MainActivity extends AppCompatActivity {
                     String str = new String(split);
                     int textOnly = Integer.parseInt(str.substring(1, 2));
                     int attachmentCount = Integer.parseInt(str.substring(2, 4));
-                    int numberLen = Integer.parseInt(str.substring(4, 6));
-                    String number = str.substring(6, 6+numberLen);
-                    String content = str.substring(6+numberLen, str.length());
+                    int dateLen = Integer.parseInt(str.substring(4, 6));
+                    long date = Long.parseLong(str.substring(6, 6+dateLen));
+                    int numberLen = Integer.parseInt(str.substring(6+dateLen, 8+dateLen));
+                    String number = str.substring(8+dateLen, 8+dateLen+numberLen);
+                    String content = str.substring(8+dateLen+numberLen, str.length());
 
                     MmsContainer mmsObj = btClientThread.getLatestMms();
                     mmsObj.address = number;
                     mmsObj.text = content;
+                    mmsObj.date = date;
                     mmsObj.textOnly = (textOnly == 1);
                     mmsObj.attachmentCount = attachmentCount;
                     btClientThread.setLatestMms(mmsObj);
@@ -1564,8 +1464,6 @@ public class MainActivity extends AppCompatActivity {
                     byte[] keyBytes = new byte[2];
                     System.arraycopy(split, 1, keyBytes, 0, 2);
                     String attachmentKey = new String(keyBytes);
-
-                    Log.d("BT_IN", "Attachment " + attachmentKey);
 
                     MmsContainer mmsObj = btClientThread.getLatestMms();
                     if(!mmsObj.finishingSequences.containsKey(attachmentKey)){
@@ -1590,11 +1488,11 @@ public class MainActivity extends AppCompatActivity {
                                 new String(finishingSequence));
 
                         int contentSize = split.length - (7+mimeLen+finSeqLen);
-                        long date = System.currentTimeMillis();
+                        long fnDate = System.currentTimeMillis();
 
                         SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd_HHmmSSSS");
                         String fileExt = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
-                        String filename = sdf.format(date) + "_" + attachmentKey + "." + fileExt;
+                        String filename = sdf.format(fnDate) + "_" + attachmentKey + "." + fileExt;
                         File attachmentFile = null;
                         try{
                             attachmentFile = MmsIO.newMmsMediaFile(filename);
@@ -1602,13 +1500,12 @@ public class MainActivity extends AppCompatActivity {
                             Log.e("MMS_IN", "Could not create new attachment file!", e);
                         }
                         if(attachmentFile != null){
-                            btClientThread.attachmentBuilder.openFileOut(attachmentFile);
-                            btClientThread.attachmentBuilder.write(split,
+                            btClientThread.newMmsAb.openFileOut(attachmentFile);
+                            btClientThread.newMmsAb.write(split,
                                     7 + mimeLen + finSeqLen, contentSize);
                             mmsObj.attachments.put(attachmentKey, attachmentFile);
                             mmsObj.mimes.put(attachmentKey, mime);
                             mmsObj.finishingSequences.put(attachmentKey, finishingSequence);
-                            mmsObj.date = date;
                             mmsObj.msgBox = 1; //msg_box=1 means INBOX
                             mmsObj.read = 0; //message has just come in, so it must be unread
                             btClientThread.setLatestMms(mmsObj);
@@ -1620,8 +1517,8 @@ public class MainActivity extends AppCompatActivity {
                         if(isSubArray(split, finSeq, split.length-finSeq.length)){
                             //this split ends in the finishing sequence, so it's the last part
                             int contentSize = split.length - finSeq.length - 3;
-                            btClientThread.attachmentBuilder.write(split, 3, contentSize);
-                            btClientThread.attachmentBuilder.closeFileOut();
+                            btClientThread.newMmsAb.write(split, 3, contentSize);
+                            btClientThread.newMmsAb.closeFileOut();
                             btClientThread.setLatestMms(mmsObj);
                             Log.d("BT_IN", "Finished MMS attachment with ID " + attachmentKey);
 
@@ -1634,9 +1531,44 @@ public class MainActivity extends AppCompatActivity {
                         }else{
                             //this split contains attachment content and typical encoding data
                             int contentSize = split.length - 3;
-                            btClientThread.attachmentBuilder.write(split, 3, contentSize);
+                            btClientThread.newMmsAb.write(split, 3, contentSize);
                         }
                     }
+                    break;
+                }
+
+                case PayloadIDs.TIMESTAMP_UPDATE: { //sms/mms sent callback
+                    char targetDb = (char)split[1];
+                    String str = new String(split);
+                    int idLen = Integer.parseInt(str.substring(2, 4));
+                    String msgId = str.substring(4, 4+idLen);
+                    long newDate = Long.parseLong(str.substring(4+idLen, str.length()));
+
+                    ContentValues values = new ContentValues();
+                    values.put("date", newDate);
+
+                    if(targetDb == PayloadIDs.SMS_MESSAGE){
+                        //update content://sms
+                        values.put("type", 2);
+                        String[] idArgs = {msgId};
+                        getContentResolver().update(
+                                Uri.parse("content://sms"),
+                                values,
+                                "_id = ?",
+                                idArgs
+                        );
+                    }else{
+                        //update content://mms
+                        values.put("msg_box", 2);
+                        String[] idArgs = {msgId};
+                        getContentResolver().update(
+                                Uri.parse("content://mms"),
+                                values,
+                                "_id = ?",
+                                idArgs
+                        );
+                    }
+                    break;
                 }
             }
         }
@@ -1650,18 +1582,17 @@ public class MainActivity extends AppCompatActivity {
         Date timestampDate = new Date(System.currentTimeMillis());
         Log.d("TIMESTAMP", String.format("Set timestamp as: %s",
                 timestampDate.toGMTString()));
-        updateBtDeviceText("No Device Connected!", -1);
+        updateBtDeviceText(null, -1);
     }
 
-    byte[] encodeSMS(String number, String content){
-        String numLen = String.format("%s", number.length());
-        if(number.length() < 10){
-            numLen = "0" + numLen;
-        }
-        return (PayloadIDs.SMS_MESSAGE + numLen + number + content + delimiter).getBytes();
+    byte[] encodeSMS(String id, String number, String content){
+        String idLen = twoDigitNumber(id.length());
+        String numLen = twoDigitNumber(number.length());
+        return (PayloadIDs.SMS_MESSAGE + idLen + id + numLen + number + content +
+                    PayloadIDs.DELIMITER_STRING).getBytes();
     }
 
-    void handleNewSMS(String smsAuthor, String smsContent){
+    void handleNewSMS(String smsAuthor, String smsContent, long date){
         /*runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -1673,13 +1604,14 @@ public class MainActivity extends AppCompatActivity {
         ContentValues insertValues = new ContentValues();
         insertValues.put("address", smsAuthor);
         insertValues.put("body", smsContent);
-        insertValues.put("date", System.currentTimeMillis());
+        insertValues.put("date", date);
         insertValues.put("read", 0); //false
         insertValues.put("type", 1); //1 = inbox/received
         getContentResolver().insert(Uri.parse("content://sms/inbox"), insertValues);
 
         String contactName = getContactName(smsAuthor);
-        sendNotification(contactName, smsContent);
+        String threadId = String.valueOf(getThreadId(smsAuthor));
+        Notifications.sendMessageNotif(getApplicationContext(), contactName, smsContent, smsAuthor);
     }
 
     void handleNewMMS(MmsContainer mms){
@@ -1700,7 +1632,7 @@ public class MainActivity extends AppCompatActivity {
 
         //insert data into content://mms to get the MMS's ID
         ContentValues mmsValues = new ContentValues();
-        mmsValues.put("date", Math.floor(mms.date/1000L)); //time must be in seconds for db entry
+        mmsValues.put("date", mms.date);
         mmsValues.put("msg_box", mms.msgBox);
         mmsValues.put("read", mms.read);
         mmsValues.put("thread_id", threadID);
@@ -1758,11 +1690,21 @@ public class MainActivity extends AppCompatActivity {
                 mms.smil.remapMediaSource(key, contentLocation);
 
                 //delete media from SD card if user has requested so in settings
+                //or if the file was saved to internal storage due to no SD card
+                boolean isFileInternal;
+                try{
+                    isFileInternal = atmntFile.getCanonicalPath().startsWith(
+                            internalStorage.getCanonicalPath());
+                }catch(IOException e){
+                    Log.e("MMS_HANDLER", "Could not check whether file is internal!", e);
+                    isFileInternal = !Environment.getExternalStorageState()
+                            .equals(Environment.MEDIA_MOUNTED); //fallback in case path check fails
+                }
                 boolean saveMedia = (boolean) Appdata.get(this, Appdata.Keys.SAVE_MEDIA, true);
-                if(!saveMedia){
+                if(!saveMedia || isFileInternal){
                     boolean deleteSuccess = atmntFile.delete();
                     if(!deleteSuccess){
-                        Log.e("MMS_HANDLER", "Could not delete " + atmntFile.getAbsolutePath() + "!");
+                        Log.e("MMS_HANDLER", "Could not delete "+atmntFile.getAbsolutePath()+"!");
                     }
                 }
             }
@@ -1784,14 +1726,15 @@ public class MainActivity extends AppCompatActivity {
 
         //save smil with its sources remapped to match table cl fields
         String smilXml = mms.smil.toXml();
+        Log.d("NEW_SMIL", "SMIL: "+smilXml);
         ContentValues smilValues = new ContentValues();
         smilValues.put("text", smilXml);
         smilValues.put("ct", "application/smil");
         smilValues.put("cl", "smil.xml");
         smilValues.put("chset", 106);
-        Uri lastPartUri = getContentResolver().insert(partTableUri, smilValues);
+        getContentResolver().insert(partTableUri, smilValues);
 
-        //send attachment for new MMS
+        //send notification for new MMS
         String contactName = getContactName(mms.address);
         String notifBody;
         if(mms.textOnly){
@@ -1805,14 +1748,15 @@ public class MainActivity extends AppCompatActivity {
                         mms.attachmentCount);
             }
         }
-        sendNotification(contactName, notifBody);
+        Notifications.sendMessageNotif(getApplicationContext(), contactName,
+                notifBody, mms.address);
     }
 
-    void handleDatabaseUpdate(String number, String content, int msgType, long date, int read){
+    void handleSmsDbUpdate(String number, String content, int msgType, long date, int read){
         Uri uri = Uri.parse("content://sms/");
         String[] columns = {"_id"};
         String[] selectionArgs = {number, content, String.valueOf(msgType),
-                String.valueOf(date-1000), String.valueOf(date+1000)};
+                String.valueOf(date-10000), String.valueOf(date+10000)}; //10 second tolerance
 
         //check if this message already exists in db
         try{
@@ -1850,38 +1794,108 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    public void handleMmsDbUpdate(String hostId, String address, long date,
+                                  int atmntCount, int msgBox, int read){
+        boolean rootMatch = false;
+        boolean addrMatch = false;
+        boolean partMatch = false;
+
+        Cursor rootCursor = getContentResolver().query(
+                Uri.parse("content://mms"),
+                new String[]{"_id"},
+                "msg_box = ? AND date BETWEEN ? AND ?",
+                new String[]{String.valueOf(msgBox), String.valueOf(date-10),
+                        String.valueOf(date+10)}, //10 second tolerance for date, just in case
+                null
+        );
+
+        if(rootCursor != null){
+            if(rootCursor.moveToFirst()){
+                rootMatch = true;
+                do {
+                    String matchId = rootCursor.getString(rootCursor.getColumnIndex("_id"));
+                    Cursor addrMatchCursor = getContentResolver().query(
+                            Uri.parse("content://mms/"+matchId+"/addr"),
+                            new String[]{"address"},
+                            "address = ?",
+                            new String[]{address},
+                            null
+                    );
+                    if(addrMatchCursor != null){
+                        addrMatch = addrMatchCursor.moveToFirst();
+                        addrMatchCursor.close();
+                    }
+                    Cursor partMatchCursor = getContentResolver().query(
+                            Uri.parse("content://mms/"+matchId+"/part"),
+                            new String[]{"_id"},
+                            "",
+                            null,
+                            null
+                    );
+                    if(partMatchCursor != null){
+                        partMatch = (partMatchCursor.getCount() == atmntCount);
+                        partMatchCursor.close();
+                    }
+                } while(rootCursor.moveToNext() && !(rootMatch && addrMatch && partMatch));
+            }
+            rootCursor.close();
+        }
+
+        if(!(rootMatch && addrMatch && partMatch)){
+            //message is not in client db, so add root and addr info and request part info
+            long threadId = getThreadId(address);
+            int m_type = 128; //m_type for outgoing messages
+            if(msgBox == 1){
+                m_type = 132; //m_type for incoming messages
+            }
+
+            ContentValues rootValues = new ContentValues();
+            rootValues.put("date", date);
+            rootValues.put("msg_box", msgBox);
+            rootValues.put("m_type", m_type);
+            rootValues.put("read", read);
+            rootValues.put("thread_id", threadId);
+            rootValues.put("ct_t", "application/vnd.wap.multipart.related");
+            rootValues.put("sub", "Multimedia Message"); //for message previews
+            rootValues.put("sub_cs", 106);
+            Uri mmsUri = getContentResolver().insert(Uri.parse("content://mms"), rootValues);
+            String clientId = mmsUri.getLastPathSegment();
+
+            //insert address segment
+            Uri addrUri = Uri.parse("content://mms/"+clientId+"/addr");
+            int addrType = 151;
+            if(msgBox == 1){
+                addrType = 137;
+            }
+
+            ContentValues addrValues = new ContentValues();
+            addrValues.put("address", address);
+            addrValues.put("type", addrType);
+            addrValues.put("charset", 106); //Default which is UTF-8
+            getContentResolver().insert(addrUri, addrValues);
+
+            //link host and client IDs in appdata so part records can be added later
+            Appdata.put(getApplicationContext(), hostId, clientId);
+
+            //request part records for this MMS
+            byte[] fullUpdateReq = (PayloadIDs.SYNC_REQUEST +
+                    (PayloadIDs.MMS_PART_ATTACHMENT + hostId + PayloadIDs.DELIMITER_STRING)).getBytes();
+            BtConnectionManager.getInstance().write(fullUpdateReq);
+        }
+    }
+
     public static void sendSyncRequest(long fromDate){
-        String syncInfoBt = PayloadIDs.SYNC_REQUEST + String.valueOf(fromDate) +
-                PayloadIDs.DELIMITER_STRING;
+        String syncInfoBt = PayloadIDs.SYNC_REQUEST + (PayloadIDs.TIMESTAMP_UPDATE +
+                String.valueOf(fromDate) + PayloadIDs.DELIMITER_STRING);
         Log.d("SYNC_REQ", String.format("Sending %s...", syncInfoBt));
         BtConnectionManager.getInstance().write(syncInfoBt.getBytes());
     }
     public static void sendSyncRequest(int days){
         long fromDate = System.currentTimeMillis() - (86400000 * days);
-        String syncInfoBt = PayloadIDs.SYNC_REQUEST + String.valueOf(fromDate) +
-                PayloadIDs.DELIMITER_STRING;
+        String syncInfoBt = PayloadIDs.SYNC_REQUEST + (PayloadIDs.TIMESTAMP_UPDATE +
+                String.valueOf(fromDate) + PayloadIDs.DELIMITER_STRING);
         Log.d("SYNC_REQ", String.format("Sending %s...", syncInfoBt));
         BtConnectionManager.getInstance().write(syncInfoBt.getBytes());
-    }
-
-    void sendNotification(String title, String content){
-        Intent notificationIntent = new Intent(Intent.ACTION_MAIN);
-        notificationIntent.addCategory(Intent.CATEGORY_DEFAULT);
-        notificationIntent.setType("vnd.android-dir/mms-sms");
-        PendingIntent contentIntent = PendingIntent.getActivity(this, 0, notificationIntent, 0);
-
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this);
-        builder.setSmallIcon(R.drawable.notifc_icon_bubble);
-        builder.setContentTitle(title);
-        builder.setContentText(content);
-        builder.setDefaults(Notification.DEFAULT_VIBRATE);
-        builder.setAutoCancel(true);
-        builder.setContentIntent(contentIntent);
-        Notification notif = builder.build();
-
-        NotificationManager notificationManager = (NotificationManager)
-                getSystemService(Context.NOTIFICATION_SERVICE);
-        notificationManager.notify(1, notif);
     }
 
     String getContactName(String number){
@@ -1938,8 +1952,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     void updateBtDeviceText(String deviceName, long lastSync){
-        connDeviceText.setText(getString(R.string.connDeviceText, String.format(
-                "Connected to %s", deviceName)));
+        if(deviceName == null){
+            connDeviceText.setText("No Device Connected!");
+        }else {
+            connDeviceText.setText(getString(R.string.connDeviceText, String.format(
+                    "Connected to %s", deviceName)));
+        }
+
         if(lastSync == -1){
             lastSyncText.setText(getString(R.string.lastSyncText, "N/A"));
         }else {
@@ -1966,6 +1985,9 @@ public class MainActivity extends AppCompatActivity {
         connDeviceText = (TextView) findViewById(R.id.connDeviceName);
         lastSyncText = (TextView) findViewById(R.id.lastSyncText);
         settingsBtn = (Button) findViewById(R.id.settingsBtn);
+
+        //save the internal storage directory
+        internalStorage = getFilesDir();
 
         //if bluetooth is off, open dialogue and request to enable it
         if(!btAdapter.isEnabled()){

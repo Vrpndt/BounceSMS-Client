@@ -6,8 +6,6 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.PersistableBundle;
-import android.support.annotation.Nullable;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.View;
@@ -22,9 +20,13 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
+import java.util.Collection;
+import java.util.Enumeration;
 
 import static com.vrpndt.bouncesmsclient.MainActivity.twoDigitNumber;
 import com.vrpndt.bouncesmsclient.MainActivity.SmilObject;
+import com.vrpndt.bouncesmsclient.util.MmsIO;
+import com.vrpndt.bouncesmsclient.util.Appdata;
 
 public class DebugActivity extends AppCompatActivity {
 
@@ -38,6 +40,12 @@ public class DebugActivity extends AppCompatActivity {
     private TextView mmsTextOut;
     private TextView mmsAtmntCountOut;
     private ImageView mmsAtmntOut;
+
+    private EditText delSmsIdIn;
+    private EditText delMmsIdIn;
+    private Button deleteSmsBtn;
+    private Button deleteMmsBtn;
+
 
 
     MainActivity.MmsContainer getMmsById(Context context, String mmsId){
@@ -107,18 +115,17 @@ public class DebugActivity extends AppCompatActivity {
                             Uri partUri = Uri.parse("content://mms/part/"+partId);
 
                             //save attachment to sd card and store in hashmap as File
-                            //save bytes to 300KB buffer
-                            byte[] attachmentBytes = MainActivity.MmsIO.readFromUri(
+                            byte[] attachmentBytes = MmsIO.readFromUri(
                                     getApplicationContext(), partUri);
                             File mediaFile = null;
                             try{
-                                mediaFile = MainActivity.MmsIO.newMmsMediaFile(String.format("outgoing.%d.%s",
+                                mediaFile = MmsIO.newMmsMediaFile(String.format("outgoing.%d.%s",
                                         System.currentTimeMillis(), fileExt));
                             }catch(IOException e){
                                 Log.e("ON_MMS_PART", "Could not create new media file!", e);
                             }
                             if(attachmentBytes != null && mediaFile != null){
-                                MainActivity.MmsIO.writeToFile(attachmentBytes, mediaFile);
+                                MmsIO.writeToFile(attachmentBytes, mediaFile);
                                 String attachmentKey = twoDigitNumber(mms.attachmentCount);
                                 mms.attachments.put(attachmentKey, mediaFile);
                                 mms.mimes.put(attachmentKey, contentType);
@@ -149,10 +156,16 @@ public class DebugActivity extends AppCompatActivity {
         mmsClOut.setText("Filename Example: "+mms.filenameMap.keys().nextElement());
         if(mms.attachmentCount > 0){
             File imgFile = mms.attachments.get("00");
-            byte[] imgBytes = MainActivity.MmsIO.readFromFile(imgFile);
+            byte[] imgBytes = MmsIO.readFromFile(imgFile);
             Bitmap image = BitmapFactory.decodeByteArray(imgBytes, 0, imgBytes.length);
             mmsAtmntOut.setImageBitmap(image);
         }
+        //delete temp files from before
+        Collection<File> atmntEnum = mms.attachments.values();
+        for(File file: atmntEnum){
+            file.delete();
+        }
+        mms.attachments.clear();
     }
 
     @Override
@@ -170,6 +183,11 @@ public class DebugActivity extends AppCompatActivity {
         mmsTextOut = (TextView) findViewById(R.id.mmsTextOut);
         mmsAtmntCountOut = (TextView) findViewById(R.id.mmsAtmntCountOut);
         mmsAtmntOut = (ImageView) findViewById(R.id.mmsAtmntOut);
+
+        delSmsIdIn = (EditText) findViewById(R.id.delSmsIdIn);
+        delMmsIdIn = (EditText) findViewById(R.id.delMmsIdIn);
+        deleteSmsBtn = (Button) findViewById(R.id.deleteSmsBtn);
+        deleteMmsBtn = (Button) findViewById(R.id.deleteMmsBtn);
 
         loadMmsBtn.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -195,6 +213,62 @@ public class DebugActivity extends AppCompatActivity {
                 }else{
                     MainActivity.MmsContainer mms = getMmsById(getApplicationContext(), mmsId);
                     displayMmsDebug(mms, mmsId);
+                }
+            }
+        });
+
+        deleteSmsBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                String smsId = delSmsIdIn.getText().toString();
+                if(smsId.equals("")){
+                    Cursor cursor = getContentResolver().query(
+                            Uri.parse("content://sms"),
+                            new String[]{"_id"},
+                            "",
+                            null,
+                            "_id DESC"
+                    );
+                    if(cursor != null){
+                        if(cursor.moveToFirst()){
+                            smsId = cursor.getString(cursor.getColumnIndex("_id"));
+                        }
+                        cursor.close();
+                    }
+
+                }
+
+                if(!smsId.equals("")){
+                    Uri smsUri = Uri.parse("content://sms/" + smsId);
+                    getContentResolver().delete(smsUri, "", null);
+                }
+            }
+        });
+
+        deleteMmsBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                String mmsId = delMmsIdIn.getText().toString();
+                if(mmsId.equals("")){
+                    Cursor cursor = getContentResolver().query(
+                            Uri.parse("content://mms"),
+                            new String[]{"_id"},
+                            "",
+                            null,
+                            "_id DESC"
+                    );
+                    if(cursor != null){
+                        if(cursor.moveToFirst()){
+                            mmsId = cursor.getString(cursor.getColumnIndex("_id"));
+                        }
+                        cursor.close();
+                    }
+
+                }
+
+                if(!mmsId.equals("")){
+                    Uri mmsRootUri = Uri.parse("content://mms/" + mmsId);
+                    getContentResolver().delete(mmsRootUri, "", null);
                 }
             }
         });
