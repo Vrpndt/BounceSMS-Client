@@ -116,6 +116,67 @@
                 android:src="@android:drawable/ic_menu_report_image"
                 android:layout_marginTop="4dp"/>
 
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="MMS/SMS DB Entry Remover"
+                android:textStyle="bold"
+                android:textSize="16sp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="4dp"/>
+
+            <android.support.v7.widget.LinearLayoutCompat
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="SMS ID (or latest):"
+                    />
+
+                <EditText
+                    android:id="@+id/delSmsIdIn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="2"
+                    android:inputType="number"/>
+
+                <Button
+                    android:id="@+id/deleteSmsBtn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Delete SMS"/>
+
+            </android.support.v7.widget.LinearLayoutCompat>
+
+            <android.support.v7.widget.LinearLayoutCompat
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="MMS ID (or latest):"
+                    />
+
+                <EditText
+                    android:id="@+id/delMmsIdIn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ems="2"
+                    android:inputType="number"/>
+
+                <Button
+                    android:id="@+id/deleteMmsBtn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Delete MMS"/>
+
+            </android.support.v7.widget.LinearLayoutCompat>
+
 
         </LinearLayout>
     </ScrollView>
