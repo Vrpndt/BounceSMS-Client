@@ -1,11 +1,9 @@
 package com.vrpndt.bouncesmsclient;
 
-import android.app.Notification;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
 import android.content.ContentValues;
-import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.database.ContentObserver;
@@ -44,7 +42,6 @@ import org.xmlpull.v1.XmlPullParserFactory;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -52,7 +49,6 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -193,8 +189,9 @@ public class MainActivity extends AppCompatActivity {
                         @Override
                         public void run() {
                             updateBtDeviceText(null, -1);
-                            Notifications.sendInfoNotif(
+                            Notifications.sendDefaultNotif(
                                     MainActivity.this,
+                                    R.drawable.notif_disconnect,
                                     "Device Disconnected",
                                     "BounceSMS is no longer connected to the host device!");
                         }
@@ -1358,7 +1355,8 @@ public class MainActivity extends AppCompatActivity {
 
                             if(btClientThread.mmsSyncAb.fileOut == null){
                                 try{
-                                    File tempFile = MmsIO.newMmsMediaFile("temp_20260721.jpeg");
+                                    File tempFile = MmsIO.newMmsMediaFile(
+                                            String.valueOf(System.currentTimeMillis())+".atmnt");
                                     btClientThread.mmsSyncAb.openFileOut(tempFile);
                                 }catch(IOException e){
                                     Log.e("TEMP_FILE", "Could not create temp file", e);
