@@ -40,6 +40,7 @@ public class DebugActivity extends AppCompatActivity {
     private TextView mmsTextOut;
     private TextView mmsAtmntCountOut;
     private ImageView mmsAtmntOut;
+    private TextView mmsSmilOut;
 
     private EditText delSmsIdIn;
     private EditText delMmsIdIn;
@@ -153,12 +154,17 @@ public class DebugActivity extends AppCompatActivity {
         mmsDateOut.setText("Date: "+sdf.format(mms.date*1000));
         mmsTextOut.setText("Text: "+mms.text);
         mmsAtmntCountOut.setText("Attachment Count: "+Integer.toString(mms.attachmentCount));
-        mmsClOut.setText("Filename Example: "+mms.filenameMap.keys().nextElement());
+        mmsSmilOut.setText("SMIL:\n"+mms.smil.toXml());
+
         if(mms.attachmentCount > 0){
+            mmsClOut.setText("Filename Example: "+mms.filenameMap.keys().nextElement());
             File imgFile = mms.attachments.get("00");
             byte[] imgBytes = MmsIO.readFromFile(imgFile);
             Bitmap image = BitmapFactory.decodeByteArray(imgBytes, 0, imgBytes.length);
             mmsAtmntOut.setImageBitmap(image);
+
+        }else{
+            mmsClOut.setText("Filename Example: N/A");
         }
         //delete temp files from before
         Collection<File> atmntEnum = mms.attachments.values();
@@ -183,6 +189,7 @@ public class DebugActivity extends AppCompatActivity {
         mmsTextOut = (TextView) findViewById(R.id.mmsTextOut);
         mmsAtmntCountOut = (TextView) findViewById(R.id.mmsAtmntCountOut);
         mmsAtmntOut = (ImageView) findViewById(R.id.mmsAtmntOut);
+        mmsSmilOut = (TextView) findViewById(R.id.mmsSmilOut);
 
         delSmsIdIn = (EditText) findViewById(R.id.delSmsIdIn);
         delMmsIdIn = (EditText) findViewById(R.id.delMmsIdIn);

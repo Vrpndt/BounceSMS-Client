@@ -12,14 +12,14 @@ import com.vrpndt.bouncesmsclient.MainActivity;
 import com.vrpndt.bouncesmsclient.R;
 
 public final class Notifications {
-    public static void sendInfoNotif(Context context, String title, String content){
+    public static void sendDefaultNotif(Context context, int icon, String title, String content){
         Intent notificationIntent = new Intent(context, MainActivity.class);
         notificationIntent.addCategory(Intent.CATEGORY_DEFAULT);
         notificationIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent contentIntent = PendingIntent.getActivity(context, 0, notificationIntent, 0);
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context);
-        builder.setSmallIcon(R.drawable.notif_icon_info);
+        builder.setSmallIcon(icon);
         builder.setContentTitle(title);
         builder.setContentText(content);
         builder.setDefaults(Notification.DEFAULT_VIBRATE);
