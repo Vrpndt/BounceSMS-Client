@@ -7,8 +7,8 @@ The client app is written to run on **Android versions 2.1 - 2.3**, and requires
 
 ### Features:
 
-- **Send and receiving SMS** messages to/from client device
-- **Send and receiving MMS** messages to/from client device
+- **Send and receive SMS** messages to/from client device
+- **Send and receive MMS** messages to/from client device
 - **Receive RCS** messages on client device (displayed as MMS)
 - **Sync MMS/SMS/RCS** message logs to client device
 - Replace modern unicode emojis with user-defined emoticons (both ways)
